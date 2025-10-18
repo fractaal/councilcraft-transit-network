@@ -604,9 +604,13 @@ function audio.playDFPWM(speaker, audio_data, volume)
     if not audio_data then return false end
 
     -- Try to play DFPWM audio
-    local success = pcall(function()
+    local success, err = pcall(function()
         speaker.playAudio(audio_data, volume or 1.0)
     end)
+
+    if not success then
+        print("[AUDIO] playAudio error: " .. tostring(err))
+    end
 
     return success
 end
