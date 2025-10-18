@@ -35,6 +35,7 @@ IN_TRANSIT → (cart arrives) → BOARDING → (DISPATCH received) → DEPARTING
 - **Status**: Stations send STATUS every 0.5s with cart presence, trip timing, state
 - **Dispatch**: Ops center sends DISPATCH when all carts present, triggers DEPARTING state
 - **Heartbeat**: Keep-alive messages every 5s
+- **Update Command** (v0.10+): Ops center sends UPDATE_COMMAND, stations auto-update from pastebin and reboot
 
 ### Trip Timing System (v0.9 feature)
 - Tracks last 10 trips per station
@@ -62,10 +63,21 @@ IN_TRANSIT → (cart arrives) → BOARDING → (DISPATCH received) → DEPARTING
 - **Manual dispatch**: In ops center console, press `d`
 - **Reset stations**: In ops center console, press `r`
 - **View stations**: Press `s`
+- **Remote update**: Press `u` (updates all stations from pastebin)
 - **Help**: Press `h`
 
 ### Updating Deployed Systems
-Use `update.lua` (pulls from pastebin):
+
+#### Remote Update (v0.10+) - RECOMMENDED
+From the ops center console, press `u` to update ALL stations at once:
+1. Ops center broadcasts UPDATE_COMMAND to all stations
+2. Each station automatically deletes old version, downloads from pastebin, and reboots
+3. No manual intervention needed per-station
+
+The pastebin ID is configured in `SCRIPT_OPS_CONFIG.pastebin_id` (line 278).
+
+#### Manual Update (per-computer)
+Use `update.lua` on individual computers (pulls from pastebin):
 ```lua
 update
 ```
@@ -131,11 +143,35 @@ These are the APIs currently used in this project (all verified against https://
 - **Computer → Powered rail**: Redstone output (configurable side)
 - **Networking**: Wired modems + networking cables (NOT wireless)
 
-### Configuration Migration
-The system auto-migrates old configs by merging with default values (lines 270-281). When adding new config keys:
-1. Add to `DEFAULT_STATION_CONFIG` or `DEFAULT_OPS_CONFIG`
-2. Migration happens automatically on load
-3. Saves updated config back to disk
+### Configuration System (v0.10+)
+The config system uses a **script-authoritative model** for easy remote updates:
+
+#### Script-Authoritative Settings (lines 247-267)
+Settings stored in `SCRIPT_STATION_CONFIG` and `SCRIPT_OPS_CONFIG` are ALWAYS loaded from the script file. These can be updated network-wide by pushing new versions via `update.lua`:
+- Timing settings: `dispatch_delay`, `departing_delay`, `heartbeat_interval`, etc.
+- Display settings: `display_update_interval`
+- Network settings: `network_channel`
+- Thresholds: `on_time_tolerance`, `early_threshold`, `delayed_threshold`
+- Feature flags: `countdown_enabled`
+
+#### Per-Station Settings (stored in `/.transit_config`)
+Only hardware-specific settings are persisted per-computer:
+- `type`: "station" or "ops"
+- `station_id`, `line_id`: Station identity (stations only)
+- `detector_side`, `powered_rail_side`: Redstone wiring (stations only)
+- `has_display`: Monitor presence
+
+#### How It Works
+1. **On load**: `loadConfig()` reads `/.transit_config` (per-station settings only)
+2. **Migration**: Strips any old script-authoritative keys from stored config
+3. **Runtime merge**: `buildRuntimeConfig()` merges script defaults with stored settings
+4. **Result**: Runtime config has both script settings (always fresh) and station settings (persisted)
+
+#### Updating Network-Wide Settings
+1. Edit `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` in `transit.lua`
+2. Upload to pastebin/update source
+3. Run `update` on all computers
+4. Settings apply immediately on next restart (no manual reconfiguration needed)
 
 ## Known Behaviors
 
@@ -187,16 +223,32 @@ ffmpeg -i input.mp3 -ac 1 -ar 48000 -f dfpwm output.dfpwm
 - **Adjustable**: Change `display_update_interval` in config
 
 ### Dispatch Delay
-- **Default**: 5 seconds (passenger boarding time)
+- **Default**: 4 seconds (passenger boarding time)
 - **Countdown**: Broadcasts countdown messages (3, 2, 1...) if enabled
 - **Non-blocking**: System continues responding to messages during delay
 
 ## Common Modifications
 
-### Adding New Config Options
-1. Add key/value to `DEFAULT_STATION_CONFIG` or `DEFAULT_OPS_CONFIG` (lines 243-261)
+### Changing Script-Authoritative Settings (v0.10+)
+To change network-wide settings like timing or thresholds:
+1. Edit values in `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` (lines 247-267)
+2. Deploy via `update.lua` to all computers
+3. Settings apply immediately on restart (no per-station reconfiguration needed)
+
+Example: To change dispatch delay from 4s to 6s, edit line 265:
+```lua
+dispatch_delay = 6,  -- Was: 4
+```
+
+### Adding New Script-Authoritative Settings
+1. Add key/value to `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` (lines 247-267)
 2. Use via `config.your_new_key` in code
-3. Migration system handles existing deployments automatically
+3. Deploy network-wide via `update.lua`
+
+### Adding New Per-Station Settings
+1. Add to `configureStation()` or `configureOps()` setup functions (lines 333-374)
+2. Add to stored config return object
+3. Requires manual reconfiguration or custom migration script
 
 ### Creating New Animations
 1. Add spinner frames to `anim.spinners` array (line 180)

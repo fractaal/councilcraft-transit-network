@@ -14,6 +14,7 @@ protocol.STATUS = "STATUS"
 protocol.DISPATCH = "DISPATCH"
 protocol.HEARTBEAT = "HEARTBEAT"
 protocol.COUNTDOWN = "COUNTDOWN"
+protocol.UPDATE_COMMAND = "UPDATE_COMMAND"
 
 function protocol.serialize(msg)
     return textutils.serialize(msg)
@@ -77,6 +78,16 @@ function protocol.createCountdown(from, seconds_remaining)
         type = protocol.COUNTDOWN,
         from = from,
         seconds_remaining = seconds_remaining,
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createUpdateCommand(from, pastebin_id, target)
+    return {
+        type = protocol.UPDATE_COMMAND,
+        from = from,
+        pastebin_id = pastebin_id,
+        target = target or "ALL",
         timestamp = os.epoch("utc")
     }
 end
@@ -239,62 +250,96 @@ end
 
 local CONFIG_FILE = "/.transit_config"
 
--- Default configs with ALL configurable options
-local DEFAULT_STATION_CONFIG = {
+-- ===================================================================
+-- SCRIPT-AUTHORITATIVE CONFIG
+-- These values are ALWAYS used from the script and can be updated
+-- remotely by pushing new versions of transit.lua via update.lua
+-- ===================================================================
+local SCRIPT_STATION_CONFIG = {
+    network_channel = 100,         -- Network channel for modem communication
     heartbeat_interval = 5,        -- Seconds between heartbeat messages
     status_send_interval = 0.5,    -- Seconds between status updates
-    display_update_interval = 0.1, -- Seconds between display redraws (faster = smoother)
-    powered_rail_duration = 2,     -- Seconds to keep powered rail active
+    display_update_interval = 0.25, -- Seconds between display redraws (faster = smoother)
+    powered_rail_duration = 4,     -- Seconds to keep powered rail active
     trip_history_size = 10,        -- Number of trips to track for timing average
     on_time_tolerance = 0.10,      -- ±10% = on time
     early_threshold = -0.05,       -- >5% early = EARLY
-    delayed_threshold = 0.05,      -- >5% late = DELAYED
-    departing_delay = 2            -- Seconds in DEPARTING state before cart leaves
+    delayed_threshold = 0.1,      -- >5% late = DELAYED
+    departing_delay = 4            -- Seconds in DEPARTING state before cart leaves
 }
 
-local DEFAULT_OPS_CONFIG = {
-    discovery_interval = 10,        -- Seconds between discovery broadcasts
-    dispatch_check_interval = 0.5,  -- Seconds between dispatch checks
-    display_update_interval = 1,    -- Seconds between display redraws
+local SCRIPT_OPS_CONFIG = {
+    network_channel = 100,         -- Network channel for modem communication
+    discovery_interval = 2,        -- Seconds between discovery broadcasts
+    dispatch_check_interval = 1,  -- Seconds between dispatch checks
+    display_update_interval = 0.25,    -- Seconds between display redraws
     dispatch_delay = 5,             -- Seconds to wait before dispatching (for passengers)
-    countdown_enabled = true        -- Broadcast countdown messages during delay
+    countdown_enabled = true,       -- Broadcast countdown messages during delay
+    pastebin_id = "uNwTJ5Sc"       -- Pastebin ID for remote updates
 }
 
--- Save config to file
+-- ===================================================================
+-- PER-STATION CONFIG (stored in .transit_config)
+-- These are station-specific settings that differ per deployment:
+-- - type (station or ops)
+-- - station_id, line_id (identity, stations only)
+-- - detector_side, powered_rail_side (hardware wiring, stations only)
+-- - has_display (hardware presence)
+-- ===================================================================
+
+-- Save per-station config to file (ONLY station-specific settings)
 local function saveConfig(config)
     local file = fs.open(CONFIG_FILE, "w")
     file.write(textutils.serialize(config))
     file.close()
 end
 
--- Migrate config - add any missing keys with defaults
-local function migrateConfig(config)
-    local defaults = config.type == "station" and DEFAULT_STATION_CONFIG or DEFAULT_OPS_CONFIG
+-- Build runtime config by merging script-authoritative settings with per-station settings
+local function buildRuntimeConfig(stored_config)
+    local script_defaults = stored_config.type == "station" and SCRIPT_STATION_CONFIG or SCRIPT_OPS_CONFIG
 
-    for key, value in pairs(defaults) do
-        if config[key] == nil then
-            config[key] = value
-        end
+    -- Start with script-authoritative settings (these ALWAYS come from the script)
+    local runtime_config = {}
+    for key, value in pairs(script_defaults) do
+        runtime_config[key] = value
     end
 
-    return config
+    -- Overlay per-station settings from stored config
+    for key, value in pairs(stored_config) do
+        runtime_config[key] = value
+    end
+
+    return runtime_config
 end
 
--- Load config from file
+-- Migrate old configs: remove script-authoritative keys from stored config
+local function migrateConfig(stored_config)
+    local script_keys = stored_config.type == "station" and SCRIPT_STATION_CONFIG or SCRIPT_OPS_CONFIG
+
+    -- Remove any script-authoritative keys from stored config
+    for key, _ in pairs(script_keys) do
+        stored_config[key] = nil
+    end
+
+    return stored_config
+end
+
+-- Load config from file and merge with script-authoritative settings
 local function loadConfig()
     if fs.exists(CONFIG_FILE) then
         local file = fs.open(CONFIG_FILE, "r")
         local content = file.readAll()
         file.close()
-        local config = textutils.unserialize(content)
+        local stored_config = textutils.unserialize(content)
 
-        -- Migrate to add new config keys
-        if config then
-            config = migrateConfig(config)
-            saveConfig(config)  -- Save migrated config
+        if stored_config then
+            -- Migrate: clean up old script-authoritative keys from stored config
+            stored_config = migrateConfig(stored_config)
+            saveConfig(stored_config)  -- Save cleaned config
+
+            -- Build final runtime config by merging script + stored
+            return buildRuntimeConfig(stored_config)
         end
-
-        return config
     end
     return nil
 end
@@ -322,36 +367,22 @@ local function configureStation()
     local has_display = read()
     has_display = (has_display == "y" or has_display == "Y")
 
-    local config = {
+    -- Return ONLY per-station settings (script-authoritative settings come from script)
+    return {
         type = "station",
         station_id = station_id,
         line_id = line_id,
-        network_channel = 100,
         detector_side = detector_side,
         powered_rail_side = powered_rail_side,
         has_display = has_display
     }
-
-    -- Add all default configurable options
-    for key, value in pairs(DEFAULT_STATION_CONFIG) do
-        config[key] = value
-    end
-
-    return config
 end
 
 local function configureOps()
-    local config = {
-        type = "ops",
-        network_channel = 100
+    -- Return ONLY per-station settings (script-authoritative settings come from script)
+    return {
+        type = "ops"
     }
-
-    -- Add all default configurable options
-    for key, value in pairs(DEFAULT_OPS_CONFIG) do
-        config[key] = value
-    end
-
-    return config
 end
 
 local function initialSetup()
@@ -368,20 +399,20 @@ local function initialSetup()
     write("Choice (1 or 2): ")
     local choice = read()
 
-    local config
+    local stored_config
     if choice == "1" then
         print("")
-        config = configureStation()
+        stored_config = configureStation()
     elseif choice == "2" then
         print("")
-        config = configureOps()
+        stored_config = configureOps()
     else
         print("Invalid choice!")
         sleep(2)
         os.reboot()
     end
 
-    saveConfig(config)
+    saveConfig(stored_config)
     print("")
     print("Configuration saved!")
     print("Rebooting...")
@@ -433,6 +464,8 @@ audio.library = {
 
     -- Hints and instructions
     ALIGHT_HINT = "ALIGHT_HINT.dfpwm",
+    ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
+    OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
 
     -- Departure sounds
     DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm"
@@ -466,32 +499,33 @@ audio.sequences = {
     CLOUD_DISTRICT = {
         "SG_MRT_BELL",
         "ARRIVAL_CLOUD_DISTRICT",
-        "ALIGHT_HINT"
+        "ALIGHT_HINT_V2"
     },
 
     DRAGONSREACH = {
         "SG_MRT_BELL",
         "ARRIVAL_DRAGONSREACH",
-        "ALIGHT_HINT"
+        "ALIGHT_HINT_V2"
     },
 
     PLAINS_DISTRICT = {
         "SG_MRT_BELL",
         "ARRIVAL_PLAINS_DISTRICT",
-        "ALIGHT_HINT"
+        "ALIGHT_HINT_V2",
+        "OTHER_TERMINATES_HERE"
     },
 
     RICARDOS = {
         "SG_MRT_BELL",
         "ARRIVAL_RICARDOS",
-        "ALIGHT_HINT"
+        "ALIGHT_HINT_V2",
+        "OTHER_TERMINATES_HERE"
     },
 
     -- Fallback sequence (used if station_id doesn't match)
     _FALLBACK = {
         "SG_MRT_BELL",
-        "ARRIVAL_GENERIC",
-        "ALIGHT_HINT"
+        "ARRIVAL_GENERIC"
     },
 
     -- Departure sequence (same for all stations)
@@ -935,12 +969,53 @@ local function runStation(config)
         end
     end
 
+    -- Handle update command
+    local function handleUpdate(msg)
+        if msg.target == "ALL" or msg.target == config.station_id then
+            print("")
+            print("[UPDATE] Remote update command received!")
+            print("[UPDATE] Pastebin ID: " .. msg.pastebin_id)
+            print("[UPDATE] Deleting old version...")
+
+            -- Delete all possible startup file locations
+            local startup_files = {"startup/transit.lua", "startup.lua", "transit.lua"}
+            for _, file in ipairs(startup_files) do
+                if fs.exists(file) then
+                    fs.delete(file)
+                    print("[UPDATE] Deleted: " .. file)
+                end
+            end
+
+            -- Create startup directory if needed
+            if not fs.exists("startup") then
+                fs.makeDir("startup")
+            end
+
+            print("[UPDATE] Downloading from pastebin...")
+            local target_file = "startup/transit.lua"
+            local result = shell.run("pastebin", "get", msg.pastebin_id, target_file)
+
+            if not result then
+                print("[UPDATE] ERROR: Failed to download!")
+                print("[UPDATE] System may be broken - manual fix required")
+                return
+            end
+
+            print("[UPDATE] Download complete!")
+            print("[UPDATE] Rebooting in 2 seconds...")
+            sleep(2)
+            os.reboot()
+        end
+    end
+
     -- Handle messages
     local function handleMessage(msg)
         if msg.type == protocol.DISCOVER then
             handleDiscover(msg)
         elseif msg.type == protocol.DISPATCH then
             handleDispatch(msg)
+        elseif msg.type == protocol.UPDATE_COMMAND then
+            handleUpdate(msg)
         end
     end
 
@@ -1619,6 +1694,7 @@ local function runOps(config)
         print("d - Force dispatch all stations")
         print("r - Reset all station states to IN_TRANSIT")
         print("s - Show station list")
+        print("u - Update all stations from pastebin")
         print("h - Show this help")
         print("===========================")
         print("")
@@ -1662,6 +1738,20 @@ local function runOps(config)
             print("No stations registered yet.")
         end
         print("===========================")
+        print("")
+    end
+
+    local function updateAllStations()
+        print("")
+        print("[UPDATE] Sending update command to all stations...")
+        print("[UPDATE] Pastebin ID: " .. config.pastebin_id)
+        print("")
+
+        local msg = protocol.createUpdateCommand("ops_center", config.pastebin_id, "ALL")
+        network.broadcast(modem, config.network_channel, msg)
+
+        print("[UPDATE] Update command sent!")
+        print("[UPDATE] Stations will download and reboot automatically.")
         print("")
     end
 
@@ -1720,6 +1810,8 @@ local function runOps(config)
                 resetAllStations()
             elseif param1 == "s" then
                 showStations()
+            elseif param1 == "u" then
+                updateAllStations()
             elseif param1 == "h" then
                 showHelp()
             end
