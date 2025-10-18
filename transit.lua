@@ -623,6 +623,9 @@ function audio.playSequence(speaker, sequence_name, station_id)
         if station_id and audio.station_map[station_id] then
             -- Exact match in mapping table (e.g., "Cloud District" → "CLOUD_DISTRICT")
             sequence_key = audio.station_map[station_id]
+            print("[AUDIO] Station '" .. station_id .. "' → sequence '" .. sequence_key .. "'")
+        else
+            print("[AUDIO] Station '" .. tostring(station_id) .. "' not found in mapping, using fallback")
         end
 
         -- Get the sequence
@@ -644,17 +647,23 @@ function audio.playSequence(speaker, sequence_name, station_id)
     for _, sound_name in ipairs(sequence) do
         local audio_data = audio.getSound(sound_name)
         if audio_data then
+            print("[AUDIO] Playing: " .. sound_name .. " (" .. #audio_data .. " bytes)")
+
             -- Play sound
             if not audio.playDFPWM(speaker, audio_data, 1.0) then
+                print("[AUDIO] Failed to play DFPWM: " .. sound_name)
                 return false  -- Failed to play, stop sequence
             end
 
             -- Wait for sound to finish (estimate: ~6KB per second of DFPWM)
             local duration = #audio_data / 6000
             sleep(duration + 0.1)  -- Small buffer between sounds
+        else
+            print("[AUDIO] No data for: " .. sound_name)
         end
     end
 
+    print("[AUDIO] Sequence complete!")
     return true
 end
 
