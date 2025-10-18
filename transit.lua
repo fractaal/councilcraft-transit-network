@@ -1519,6 +1519,7 @@ local function runOps(config)
     local function displayStatus()
         display.clear(mon, colors.black)
         local w, h = mon.getSize()
+        local now = os.epoch("utc") / 1000  -- For heartbeat calculation
 
         -- Animated header with border
         display.drawLine(mon, 1, "=", colors.gray)
