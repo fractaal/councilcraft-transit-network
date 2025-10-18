@@ -1,0 +1,1549 @@
+-- transit.lua
+-- CouncilCraft Transit Network v0.9
+-- Real-time trip monitoring with live delay detection!
+
+-- ============================================================================
+-- SHARED: PROTOCOL
+-- ============================================================================
+
+local protocol = {}
+
+protocol.DISCOVER = "DISCOVER"
+protocol.REGISTER = "REGISTER"
+protocol.STATUS = "STATUS"
+protocol.DISPATCH = "DISPATCH"
+protocol.HEARTBEAT = "HEARTBEAT"
+protocol.COUNTDOWN = "COUNTDOWN"
+
+function protocol.serialize(msg)
+    return textutils.serialize(msg)
+end
+
+function protocol.deserialize(str)
+    return textutils.unserialize(str)
+end
+
+function protocol.createDiscover(from)
+    return {
+        type = protocol.DISCOVER,
+        from = from,
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createRegister(station_id, line_id, has_display)
+    return {
+        type = protocol.REGISTER,
+        from = station_id,
+        station_id = station_id,
+        line_id = line_id,
+        has_display = has_display or false,
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createStatus(station_id, cart_present, trip_status, avg_trip_time, state)
+    return {
+        type = protocol.STATUS,
+        from = station_id,
+        station_id = station_id,
+        cart_present = cart_present,
+        trip_status = trip_status or "N/A",
+        avg_trip_time = avg_trip_time,
+        state = state or "IN_TRANSIT",  -- IN_TRANSIT, BOARDING, DEPARTING
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createDispatch(from, target)
+    return {
+        type = protocol.DISPATCH,
+        from = from,
+        target = target or "ALL",
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createHeartbeat(from)
+    return {
+        type = protocol.HEARTBEAT,
+        from = from,
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createCountdown(from, seconds_remaining)
+    return {
+        type = protocol.COUNTDOWN,
+        from = from,
+        seconds_remaining = seconds_remaining,
+        timestamp = os.epoch("utc")
+    }
+end
+
+-- ============================================================================
+-- SHARED: NETWORK
+-- ============================================================================
+
+local network = {}
+
+function network.openModem(channel)
+    local modem = peripheral.find("modem")
+    if not modem then
+        error("No modem found! Please attach a wired modem.")
+    end
+
+    modem.open(channel)
+    return modem
+end
+
+function network.send(modem, channel, message)
+    local serialized = protocol.serialize(message)
+    modem.transmit(channel, channel, serialized)
+end
+
+function network.broadcast(modem, channel, message)
+    network.send(modem, channel, message)
+end
+
+function network.receiveWithTimeout(timeout)
+    timeout = timeout or 1
+    local timer = os.startTimer(timeout)
+
+    while true do
+        local event, param1, param2, param3, param4, param5 = os.pullEvent()
+
+        if event == "timer" and param1 == timer then
+            return nil, nil
+        elseif event == "modem_message" then
+            os.cancelTimer(timer)
+            local message = param4
+            local channel = param2
+
+            if type(message) == "string" then
+                local decoded = protocol.deserialize(message)
+                return decoded, channel
+            end
+        end
+    end
+end
+
+-- ============================================================================
+-- SHARED: DISPLAY & ANIMATIONS
+-- ============================================================================
+
+local display = {}
+
+-- Find monitor or use terminal
+function display.getOutput()
+    local monitor = peripheral.find("monitor")
+    if monitor then
+        return monitor
+    end
+    return term.current()
+end
+
+-- Center text on a line
+function display.centerText(output, y, text, textColor, bgColor)
+    local w, h = output.getSize()
+    local x = math.floor((w - #text) / 2) + 1
+
+    if textColor then output.setTextColor(textColor) end
+    if bgColor then output.setBackgroundColor(bgColor) end
+
+    output.setCursorPos(x, y)
+    output.write(text)
+end
+
+-- Draw a horizontal line
+function display.drawLine(output, y, char, color)
+    local w, h = output.getSize()
+    if color then output.setTextColor(color) end
+    output.setCursorPos(1, y)
+    output.write(string.rep(char or "=", w))
+end
+
+-- Clear with color
+function display.clear(output, bgColor)
+    if bgColor then output.setBackgroundColor(bgColor) end
+    output.clear()
+    output.setCursorPos(1, 1)
+end
+
+-- ============================================================================
+-- ANIMATION SYSTEM
+-- ============================================================================
+
+local anim = {}
+
+-- Spinner frames (for IN TRANSIT)
+anim.spinners = {
+    {"|", "/", "-", "\\"},  -- Classic spinner
+    {".", "..", "...", ".."},  -- Dot loader
+    {"(   )", "( . )", "(  .)", "( . )", "(. )"},  -- Traveling dot
+    {"[    ]", "[=   ]", "[==  ]", "[=== ]", "[====]", "[ ===]", "[  ==]", "[   =]"}  -- Progress bar
+}
+
+-- Status icons with Minecraft-friendly characters
+anim.icons = {
+    on_time = "[" .. string.char(251) .. "]",  -- √ checkmark
+    delayed = "[!!]",
+    early = "[^^]",
+    waiting = "[ ]",
+    present = "[##]",
+    transit = "[>>]",
+    boarding = "[==]",
+    departing = "[<<]"
+}
+
+-- Get spinner frame
+function anim.getSpinner(frame, style, fixed_width)
+    style = style or 1
+    local spinner = anim.spinners[style]
+    local result = spinner[(frame % #spinner) + 1]
+
+    -- Pad to fixed width if requested
+    if fixed_width then
+        local padding = fixed_width - #result
+        if padding > 0 then
+            result = result .. string.rep(" ", padding)
+        end
+    end
+
+    return result
+end
+
+-- Get flashing state (for urgent alerts)
+function anim.shouldFlash(frame, frequency)
+    frequency = frequency or 2  -- Flash every N frames
+    return (frame % (frequency * 2)) < frequency
+end
+
+-- Cycle through colors (for attention-grabbing elements)
+function anim.cycleColor(frame, colors_list)
+    return colors_list[(frame % #colors_list) + 1]
+end
+
+-- Progress bar generator
+function anim.progressBar(progress, width, filled_char, empty_char)
+    filled_char = filled_char or "="
+    empty_char = empty_char or " "
+    local filled_width = math.floor(progress * width)
+    local empty_width = width - filled_width
+    return string.rep(filled_char, filled_width) .. string.rep(empty_char, empty_width)
+end
+
+-- ============================================================================
+-- CONFIGURATION DETECTION
+-- ============================================================================
+
+local CONFIG_FILE = "/.transit_config"
+
+-- Default configs with ALL configurable options
+local DEFAULT_STATION_CONFIG = {
+    heartbeat_interval = 5,        -- Seconds between heartbeat messages
+    status_send_interval = 0.5,    -- Seconds between status updates
+    display_update_interval = 0.1, -- Seconds between display redraws (faster = smoother)
+    powered_rail_duration = 2,     -- Seconds to keep powered rail active
+    trip_history_size = 10,        -- Number of trips to track for timing average
+    on_time_tolerance = 0.10,      -- ±10% = on time
+    early_threshold = -0.05,       -- >5% early = EARLY
+    delayed_threshold = 0.05,      -- >5% late = DELAYED
+    departing_delay = 2            -- Seconds in DEPARTING state before cart leaves
+}
+
+local DEFAULT_OPS_CONFIG = {
+    discovery_interval = 10,        -- Seconds between discovery broadcasts
+    dispatch_check_interval = 0.5,  -- Seconds between dispatch checks
+    display_update_interval = 1,    -- Seconds between display redraws
+    dispatch_delay = 5,             -- Seconds to wait before dispatching (for passengers)
+    countdown_enabled = true        -- Broadcast countdown messages during delay
+}
+
+-- Save config to file
+local function saveConfig(config)
+    local file = fs.open(CONFIG_FILE, "w")
+    file.write(textutils.serialize(config))
+    file.close()
+end
+
+-- Migrate config - add any missing keys with defaults
+local function migrateConfig(config)
+    local defaults = config.type == "station" and DEFAULT_STATION_CONFIG or DEFAULT_OPS_CONFIG
+
+    for key, value in pairs(defaults) do
+        if config[key] == nil then
+            config[key] = value
+        end
+    end
+
+    return config
+end
+
+-- Load config from file
+local function loadConfig()
+    if fs.exists(CONFIG_FILE) then
+        local file = fs.open(CONFIG_FILE, "r")
+        local content = file.readAll()
+        file.close()
+        local config = textutils.unserialize(content)
+
+        -- Migrate to add new config keys
+        if config then
+            config = migrateConfig(config)
+            saveConfig(config)  -- Save migrated config
+        end
+
+        return config
+    end
+    return nil
+end
+
+local function configureStation()
+    print("Station Configuration")
+    print("=====================")
+    print("")
+    write("Station ID (e.g., 'station_alpha'): ")
+    local station_id = read()
+
+    write("Line ID (e.g., 'red_line'): ")
+    local line_id = read()
+
+    print("")
+    print("Redstone sides: top, bottom, left, right, front, back")
+    write("Detector rail input side: ")
+    local detector_side = read()
+
+    write("Powered rail output side: ")
+    local powered_rail_side = read()
+
+    print("")
+    write("Has monitors? (y/n): ")
+    local has_display = read()
+    has_display = (has_display == "y" or has_display == "Y")
+
+    local config = {
+        type = "station",
+        station_id = station_id,
+        line_id = line_id,
+        network_channel = 100,
+        detector_side = detector_side,
+        powered_rail_side = powered_rail_side,
+        has_display = has_display
+    }
+
+    -- Add all default configurable options
+    for key, value in pairs(DEFAULT_STATION_CONFIG) do
+        config[key] = value
+    end
+
+    return config
+end
+
+local function configureOps()
+    local config = {
+        type = "ops",
+        network_channel = 100
+    }
+
+    -- Add all default configurable options
+    for key, value in pairs(DEFAULT_OPS_CONFIG) do
+        config[key] = value
+    end
+
+    return config
+end
+
+local function initialSetup()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CouncilCraft Transit Network")
+    print("v0.9 Setup")
+    print("========================")
+    print("")
+    print("What is this computer?")
+    print("1) Station Terminal")
+    print("2) Operations Center")
+    print("")
+    write("Choice (1 or 2): ")
+    local choice = read()
+
+    local config
+    if choice == "1" then
+        print("")
+        config = configureStation()
+    elseif choice == "2" then
+        print("")
+        config = configureOps()
+    else
+        print("Invalid choice!")
+        sleep(2)
+        os.reboot()
+    end
+
+    saveConfig(config)
+    print("")
+    print("Configuration saved!")
+    print("Rebooting...")
+    sleep(2)
+    os.reboot()
+end
+
+-- ============================================================================
+-- AUDIO SYSTEM (Singapore MRT-inspired sounds!)
+-- ============================================================================
+
+local audio = {}
+
+-- ============================================================================
+-- AUDIO CONFIGURATION
+-- ============================================================================
+-- Replace these URLs with your actual DFPWM file URLs from GitHub raw hosting
+-- Example: "https://raw.githubusercontent.com/username/repo/main/sounds/arrival.dfpwm"
+
+audio.config = {
+    -- Arrival chime (plays when cart arrives at station)
+    arrival_chime_url = "PLACEHOLDER_ARRIVAL_CHIME_URL",
+
+    -- Door closing chirp (plays continuously during DEPARTING state)
+    door_closing_url = "PLACEHOLDER_DOOR_CLOSING_URL",
+
+    -- Cache directory for downloaded sounds
+    cache_dir = "/sounds/",
+
+    -- Enable/disable DFPWM playback (fallback to noteblock if false or download fails)
+    enable_dfpwm = true
+}
+
+-- ============================================================================
+-- DFPWM AUDIO SYSTEM
+-- ============================================================================
+
+-- Download and cache a sound file
+function audio.downloadSound(url, filename)
+    if not audio.config.enable_dfpwm then return nil end
+    if url == "" or url:sub(1, 11) == "PLACEHOLDER" then return nil end
+
+    local cache_path = audio.config.cache_dir .. filename
+
+    -- Check cache first
+    if fs.exists(cache_path) then
+        local file = fs.open(cache_path, "rb")
+        if file then
+            local data = file.readAll()
+            file.close()
+            return data
+        end
+    end
+
+    -- Download from URL
+    local response = http.get(url)
+    if response then
+        local data = response.readAll()
+        response.close()
+
+        -- Cache it for future use
+        if not fs.exists(audio.config.cache_dir) then
+            fs.makeDir(audio.config.cache_dir)
+        end
+
+        local file = fs.open(cache_path, "wb")
+        if file then
+            file.write(data)
+            file.close()
+        end
+
+        return data
+    end
+
+    return nil
+end
+
+-- Play DFPWM audio or fallback to noteblock
+function audio.playDFPWM(speaker, audio_data, volume)
+    if not speaker then return false end
+    if not audio_data then return false end
+
+    -- Try to play DFPWM audio
+    local success = pcall(function()
+        speaker.playAudio(audio_data, volume or 1.0)
+    end)
+
+    return success
+end
+
+-- ============================================================================
+-- NOTEBLOCK FALLBACK SYSTEM
+-- ============================================================================
+
+-- Note pitches (semitones, where 12 = F#, relative to noteblock scale)
+-- F# is at 0, 12, 24. C is at 6, 18. Each semitone = 1 step.
+-- F#3=0, G3=1, A3=3, B3=5, C4=6, D4=8, E4=10, F#4=12, G4=13, A4=15, B4=17, C5=18
+audio.notes = {
+    G3 = 1,   -- One semitone above F#
+    B3 = 5,   -- Five semitones above F#
+    D4 = 8,   -- Eight semitones above F#
+    G4 = 13,  -- 13 semitones above F#
+    F5 = 23   -- High F for door closing chirp
+}
+
+-- Noteblock fallback: G3->D4->B3->G4->D4 (Singapore MRT inspired)
+function audio.playArrivalChimeNoteblock(speaker)
+    if not speaker then return end
+
+    local sequence = {
+        {audio.notes.G3, 0.3},   -- 2x slower (was 0.15)
+        {audio.notes.D4, 0.3},   -- 2x slower (was 0.15)
+        {audio.notes.B3, 0.3},   -- 2x slower (was 0.15)
+        {audio.notes.G4, 0.3},   -- 2x slower (was 0.15)
+        {audio.notes.D4, 0.6}    -- 2x slower (was 0.3)
+    }
+
+    for _, note_data in ipairs(sequence) do
+        local pitch, duration = note_data[1], note_data[2]
+        speaker.playNote("bell", 1.0, pitch)
+        sleep(duration)
+    end
+end
+
+-- Noteblock fallback: Single chirp
+function audio.playDoorClosingChirpNoteblock(speaker)
+    if not speaker then return end
+    speaker.playNote("pling", 0.8, audio.notes.F5)
+end
+
+-- ============================================================================
+-- PUBLIC API (with automatic fallback)
+-- ============================================================================
+
+-- Play arrival chime: Tries DFPWM first, falls back to noteblock
+function audio.playArrivalChime(speaker)
+    if not speaker then return end
+
+    -- Try DFPWM
+    local audio_data = audio.downloadSound(audio.config.arrival_chime_url, "arrival_chime.dfpwm")
+    if audio_data and audio.playDFPWM(speaker, audio_data, 1.0) then
+        return  -- Success!
+    end
+
+    -- Fallback to noteblock
+    audio.playArrivalChimeNoteblock(speaker)
+end
+
+-- Play door closing chirp: Tries DFPWM first, falls back to noteblock
+-- This should be called repeatedly in a loop until departure
+function audio.playDoorClosingChirp(speaker)
+    if not speaker then return end
+
+    -- Try DFPWM (but don't download every call - check cache only)
+    local cache_path = audio.config.cache_dir .. "door_closing.dfpwm"
+    if fs.exists(cache_path) then
+        local file = fs.open(cache_path, "rb")
+        if file then
+            local audio_data = file.readAll()
+            file.close()
+
+            if audio.playDFPWM(speaker, audio_data, 0.8) then
+                return  -- Success!
+            end
+        end
+    else
+        -- First time: try to download
+        local audio_data = audio.downloadSound(audio.config.door_closing_url, "door_closing.dfpwm")
+        if audio_data and audio.playDFPWM(speaker, audio_data, 0.8) then
+            return  -- Success!
+        end
+    end
+
+    -- Fallback to noteblock
+    audio.playDoorClosingChirpNoteblock(speaker)
+end
+
+-- ============================================================================
+-- STATION MODE
+-- ============================================================================
+
+local function runStation(config)
+    -- State
+    local state = "IN_TRANSIT"  -- IN_TRANSIT, BOARDING, DEPARTING
+    local cart_present = false
+    local last_heartbeat = 0
+    local last_status_send = 0
+    local modem = nil
+    local speaker = nil  -- Auto-discovered speaker
+
+    -- Trip timing
+    local trip_history = {}  -- Array of trip durations in seconds
+    local trip_start_time = nil  -- When cart departed (start of current trip)
+    local trip_status = "N/A"  -- "ON TIME", "EARLY", "DELAYED", "N/A"
+
+    -- Departing state timer
+    local departing_start_time = nil
+    local last_chirp_time = 0  -- Track last door closing chirp
+
+    -- Setup
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CouncilCraft Transit Network")
+    print("Station Controller v0.9")
+    print("========================")
+    print("")
+    print("Station ID: " .. config.station_id)
+    print("Line ID: " .. config.line_id)
+    print("")
+    print("Opening modem...")
+
+    modem = network.openModem(config.network_channel)
+    print("Modem opened on channel " .. config.network_channel)
+
+    -- Auto-discover speaker
+    speaker = peripheral.find("speaker")
+    if speaker then
+        print("Speaker found! Audio enabled.")
+    else
+        print("No speaker found. Audio disabled.")
+    end
+
+    print("Waiting for DISCOVER from ops center...")
+    print("")
+
+    -- Check detector rail
+    local function checkDetector()
+        return redstone.getInput(config.detector_side)
+    end
+
+    -- Activate powered rail
+    local function activatePoweredRail(active)
+        redstone.setOutput(config.powered_rail_side, active)
+    end
+
+    -- Calculate average trip time (MUST be defined before sendStatus!)
+    local function getAverageTripTime()
+        if #trip_history == 0 then return nil end
+        local sum = 0
+        for _, duration in ipairs(trip_history) do
+            sum = sum + duration
+        end
+        return sum / #trip_history
+    end
+
+    -- Calculate trip status (ON TIME/EARLY/DELAYED)
+    local function calculateTripStatus(trip_duration)
+        local avg = getAverageTripTime()
+        if not avg then return "N/A" end
+
+        local deviation = (trip_duration - avg) / avg
+
+        if deviation < config.early_threshold then
+            return "EARLY"
+        elseif deviation > config.delayed_threshold then
+            return "DELAYED"
+        else
+            return "ON TIME"
+        end
+    end
+
+    -- Get current trip duration (in real-time during transit)
+    local function getCurrentTripDuration()
+        if not trip_start_time then return nil end
+        local now = os.epoch("utc") / 1000
+        return now - trip_start_time
+    end
+
+    -- Calculate real-time trip status (during transit)
+    local function getCurrentTripStatus()
+        local current_duration = getCurrentTripDuration()
+        if not current_duration then return "N/A", nil end
+
+        local avg = getAverageTripTime()
+        if not avg then return "N/A", current_duration end
+
+        return calculateTripStatus(current_duration), current_duration
+    end
+
+    -- Record trip completion
+    local function recordTrip(duration)
+        table.insert(trip_history, duration)
+        if #trip_history > config.trip_history_size then
+            table.remove(trip_history, 1)  -- Remove oldest
+        end
+        trip_status = calculateTripStatus(duration)
+        print("[" .. os.date("%H:%M:%S") .. "] Trip: " .. string.format("%.1f", duration) .. "s (" .. trip_status .. ")")
+    end
+
+    -- Send status (uses getAverageTripTime, so must come after)
+    local function sendStatus()
+        local avg = getAverageTripTime()
+        local current_status, current_duration = getCurrentTripStatus()
+
+        -- Use real-time status if in transit, otherwise use last recorded
+        local status_to_send = (state == "IN_TRANSIT" and current_status ~= "N/A") and current_status or trip_status
+
+        local msg = protocol.createStatus(config.station_id, cart_present, status_to_send, avg, state)
+        -- Add current trip duration for real-time display
+        msg.current_trip_duration = current_duration
+
+        network.send(modem, config.network_channel, msg)
+    end
+
+    -- Send heartbeat
+    local function sendHeartbeat()
+        local msg = protocol.createHeartbeat(config.station_id)
+        network.send(modem, config.network_channel, msg)
+    end
+
+    -- Handle discovery
+    local function handleDiscover(msg)
+        print("DISCOVER received from " .. msg.from)
+        print("Registering with ops center...")
+
+        local registerMsg = protocol.createRegister(
+            config.station_id,
+            config.line_id,
+            config.has_display
+        )
+
+        network.send(modem, config.network_channel, registerMsg)
+        print("REGISTER sent!")
+    end
+
+    -- Handle dispatch
+    local function handleDispatch(msg)
+        if msg.target == "ALL" or msg.target == config.station_id then
+            print("DISPATCH received!")
+            state = "DEPARTING"
+            departing_start_time = os.epoch("utc") / 1000
+            sendStatus()
+        end
+    end
+
+    -- Handle messages
+    local function handleMessage(msg)
+        if msg.type == protocol.DISCOVER then
+            handleDiscover(msg)
+        elseif msg.type == protocol.DISPATCH then
+            handleDispatch(msg)
+        end
+    end
+
+    -- Display status on monitor (if available)
+    local mon = config.has_display and display.getOutput() or nil
+    local anim_frame = 0
+    local function displayStationStatus()
+        if not mon then return end
+
+        display.clear(mon, colors.black)
+        local w, h = mon.getSize()
+
+        -- Animated header with box drawing
+        display.centerText(mon, 1, string.rep("-", w - 4), colors.gray, colors.black)
+        display.centerText(mon, 2, "COUNCILCRAFT TRANSIT", colors.white, colors.black)
+        display.centerText(mon, 3, string.rep("-", w - 4), colors.gray, colors.black)
+
+        -- Line info with colored badge
+        mon.setCursorPos(2, 5)
+        mon.setTextColor(colors.black)
+        mon.setBackgroundColor(colors.cyan)
+        mon.write(" " .. string.upper(config.line_id) .. " ")
+        mon.setBackgroundColor(colors.black)
+
+        mon.setCursorPos(2, 6)
+        mon.setTextColor(colors.lightGray)
+        mon.write("Station: " .. config.station_id)
+
+        -- State icon and status with animations
+        local statusIcon
+        local statusText
+        local statusColor
+        local shouldAnimate = false
+        local secondaryAnim = ""
+
+        if state == "DEPARTING" then
+            statusIcon = anim.icons.departing
+            statusText = "DEPARTING"
+            statusColor = colors.orange
+            -- Add departure countdown animation
+            secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
+        elseif state == "BOARDING" then
+            statusIcon = anim.icons.boarding
+            statusText = "BOARDING"
+            statusColor = colors.lime
+            -- Gentle pulsing effect
+            if anim.shouldFlash(anim_frame, 3) then
+                statusColor = colors.lightGray
+            end
+        else  -- IN_TRANSIT
+            statusIcon = anim.icons.transit
+            statusText = "IN TRANSIT"
+            statusColor = colors.yellow
+            shouldAnimate = true
+            secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
+        end
+
+        mon.setCursorPos(2, 9)
+        mon.setTextColor(colors.gray)
+        mon.write("STATUS:")
+
+        mon.setCursorPos(2, 10)
+        mon.setTextColor(statusColor)
+        mon.write(statusIcon .. " " .. statusText)
+
+        -- Animated secondary indicator
+        if shouldAnimate or state == "DEPARTING" then
+            display.centerText(mon, 11, secondaryAnim, statusColor, colors.black)
+        end
+
+        -- Trip timing status with real-time monitoring
+        local current_status, current_duration = getCurrentTripStatus()
+        local avg = getAverageTripTime()
+
+        -- Show timing section if we have data
+        if (current_status ~= "N/A" or trip_status ~= "N/A") and avg then
+            local displayStatus = current_status ~= "N/A" and current_status or trip_status
+            local timingIcon
+            local timingColor
+            local shouldFlash = false
+
+            if displayStatus == "ON TIME" then
+                timingIcon = anim.icons.on_time
+                timingColor = colors.lime
+            elseif displayStatus == "EARLY" then
+                timingIcon = anim.icons.early
+                timingColor = colors.cyan
+            elseif displayStatus == "DELAYED" then
+                timingIcon = anim.icons.delayed
+                timingColor = colors.red
+                shouldFlash = true
+            end
+
+            -- Flash DELAYED status for urgency
+            local displayColor = timingColor
+            if shouldFlash and not anim.shouldFlash(anim_frame, 2) then
+                displayColor = colors.gray
+            end
+
+            mon.setCursorPos(2, 13)
+            mon.setTextColor(colors.gray)
+            mon.write("TIMING:")
+
+            mon.setCursorPos(2, 14)
+            mon.setTextColor(displayColor)
+            mon.write(timingIcon .. " " .. displayStatus)
+
+            -- Show real-time trip progress
+            if state == "IN_TRANSIT" and current_duration then
+                local eta = avg - current_duration
+                mon.setCursorPos(2, 15)
+                mon.setTextColor(displayColor)
+                mon.write("Arriving in " .. string.format("%.0f", math.max(0, eta)) .. "s")
+
+                -- Show current vs average with color coding
+                mon.setCursorPos(2, 16)
+                mon.setTextColor(colors.gray)
+                mon.write("Trip: ")
+                mon.setTextColor(displayColor)
+                mon.write(string.format("%.0f", current_duration) .. "s")
+                mon.setTextColor(colors.gray)
+                mon.write(" / ")
+                mon.setTextColor(colors.lightGray)
+                mon.write(string.format("%.0f", avg) .. "s")
+            else
+                -- Show average with progress bar when not in transit
+                if #trip_history > 0 then
+                    mon.setCursorPos(2, 15)
+                    mon.setTextColor(colors.gray)
+                    mon.write("Avg: " .. string.format("%.1f", avg) .. "s")
+
+                    -- Visual history indicator
+                    local barWidth = math.min(w - 4, 20)
+                    local progress = #trip_history / config.trip_history_size
+                    local bar = anim.progressBar(progress, barWidth, "=", "-")
+                    mon.setCursorPos(2, 16)
+                    mon.setTextColor(colors.blue)
+                    mon.write("[" .. bar .. "]")
+                    mon.setCursorPos(w - 8, 16)
+                    mon.setTextColor(colors.gray)
+                    mon.write(#trip_history .. "/" .. config.trip_history_size)
+                end
+            end
+        end
+
+        -- Bottom status bar with time
+        display.drawLine(mon, h - 1, "-", colors.gray)
+        mon.setCursorPos(2, h)
+        mon.setTextColor(colors.gray)
+        mon.write(os.date("%H:%M:%S"))
+
+        -- Connection indicator (heartbeat)
+        mon.setCursorPos(w - 8, h)
+        mon.setTextColor(colors.lime)
+        mon.write("[ONLINE]")
+    end
+
+    -- Main loop
+    local last_display_update = 0
+    while true do
+        local now = os.epoch("utc") / 1000
+
+        -- State machine
+        if state == "IN_TRANSIT" then
+            -- Check for cart arrival
+            local detector_active = checkDetector()
+            if detector_active and not cart_present then
+                cart_present = true
+                state = "BOARDING"
+
+                -- Calculate trip time if we have a start time
+                if trip_start_time then
+                    local trip_duration = now - trip_start_time
+                    recordTrip(trip_duration)
+                end
+
+                print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: BOARDING")
+
+                -- Play arrival chime (Singapore MRT inspired!)
+                audio.playArrivalChime(speaker)
+
+                sendStatus()
+            end
+
+        elseif state == "DEPARTING" then
+            -- Play continuous door closing chirps during entire DEPARTING state
+            if now - last_chirp_time >= 0.05 then
+                audio.playDoorClosingChirp(speaker)
+                last_chirp_time = now
+            end
+
+            -- Non-blocking delay in DEPARTING state
+            if now - departing_start_time >= config.departing_delay then
+                print("[" .. os.date("%H:%M:%S") .. "] Activating powered rail...")
+
+                -- Activate powered rail for duration (chirps continue via loop above)
+                activatePoweredRail(true)
+                local rail_start = now
+                while (os.epoch("utc") / 1000) - rail_start < config.powered_rail_duration do
+                    local loop_now = os.epoch("utc") / 1000
+
+                    -- Continue chirping during rail activation
+                    if loop_now - last_chirp_time >= 0.05 then
+                        audio.playDoorClosingChirp(speaker)
+                        last_chirp_time = loop_now
+                    end
+
+                    -- Still handle messages/display during rail activation
+                    displayStationStatus()
+                    local msg, channel = network.receiveWithTimeout(0.05)
+                    if msg then handleMessage(msg) end
+                end
+                activatePoweredRail(false)
+
+                -- Cart has left!
+                print("[" .. os.date("%H:%M:%S") .. "] Cart departed! Status: IN TRANSIT")
+                state = "IN_TRANSIT"
+                cart_present = false
+                trip_start_time = os.epoch("utc") / 1000  -- Start timing new trip
+                sendStatus()
+            end
+        end
+        -- BOARDING state just waits for DISPATCH command
+
+        -- Periodic status
+        if now - last_status_send > config.status_send_interval then
+            sendStatus()
+            last_status_send = now
+        end
+
+        -- Heartbeat
+        if now - last_heartbeat > config.heartbeat_interval then
+            sendHeartbeat()
+            last_heartbeat = now
+        end
+
+        -- Update display
+        if now - last_display_update > config.display_update_interval then
+            displayStationStatus()
+            anim_frame = anim_frame + 1
+            last_display_update = now
+        end
+
+        -- Check messages
+        local msg, channel = network.receiveWithTimeout(0.1)
+        if msg then
+            handleMessage(msg)
+        end
+    end
+end
+
+-- ============================================================================
+-- OPS CENTER MODE
+-- ============================================================================
+
+local function runOps(config)
+    -- State
+    local stations = {}
+    local modem = nil
+    local last_discovery = 0
+
+    -- Setup
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CouncilCraft Transit Network")
+    print("Operations Center v0.9")
+    print("========================")
+    print("")
+
+    modem = network.openModem(config.network_channel)
+    print("Modem opened on channel " .. config.network_channel)
+    print("")
+    print("Starting discovery...")
+    print("")
+
+    -- Send discovery
+    local function sendDiscovery()
+        local msg = protocol.createDiscover("ops_center")
+        network.broadcast(modem, config.network_channel, msg)
+        print("[" .. os.date("%H:%M:%S") .. "] DISCOVER broadcast sent")
+    end
+
+    -- Handle registration
+    local function handleRegister(msg)
+        local station_id = msg.station_id
+
+        if not stations[station_id] then
+            print("[" .. os.date("%H:%M:%S") .. "] NEW STATION: " .. station_id .. " (Line: " .. msg.line_id .. ")")
+        end
+
+        stations[station_id] = {
+            station_id = station_id,
+            line_id = msg.line_id,
+            cart_present = false,
+            last_heartbeat = os.epoch("utc") / 1000,
+            has_display = msg.has_display or false,
+            trip_status = "N/A",
+            avg_trip_time = nil,
+            state = "IN_TRANSIT",
+            current_trip_duration = nil,
+            last_completed_trip_time = nil  -- Store the final trip time when cart arrives
+        }
+    end
+
+    -- Handle status
+    local function handleStatus(msg)
+        local station_id = msg.station_id
+
+        if stations[station_id] then
+            local old_status = stations[station_id].cart_present
+            stations[station_id].cart_present = msg.cart_present
+            stations[station_id].last_heartbeat = os.epoch("utc") / 1000
+
+            -- Update trip timing data
+            if msg.trip_status then
+                stations[station_id].trip_status = msg.trip_status
+            end
+            if msg.avg_trip_time then
+                stations[station_id].avg_trip_time = msg.avg_trip_time
+            end
+
+            -- Update real-time trip duration (only during transit)
+            if msg.current_trip_duration and msg.state == "IN_TRANSIT" then
+                stations[station_id].current_trip_duration = msg.current_trip_duration
+            end
+
+            -- When cart arrives, freeze the trip time
+            if old_status ~= msg.cart_present and msg.cart_present then
+                -- Cart just arrived - capture the final trip time
+                if stations[station_id].current_trip_duration then
+                    stations[station_id].last_completed_trip_time = stations[station_id].current_trip_duration
+                end
+            end
+
+            -- Clear last_completed_trip_time when cart departs (starts new trip)
+            if old_status ~= msg.cart_present and not msg.cart_present then
+                stations[station_id].last_completed_trip_time = nil
+            end
+
+            -- Update state
+            if msg.state then
+                stations[station_id].state = msg.state
+            end
+
+            if old_status ~= msg.cart_present then
+                if msg.cart_present then
+                    print("[" .. os.date("%H:%M:%S") .. "] " .. station_id .. ": CART ARRIVED")
+                else
+                    print("[" .. os.date("%H:%M:%S") .. "] " .. station_id .. ": CART DEPARTED")
+                end
+            end
+        end
+    end
+
+    -- Handle heartbeat
+    local function handleHeartbeat(msg)
+        local station_id = msg.from
+
+        if stations[station_id] then
+            stations[station_id].last_heartbeat = os.epoch("utc") / 1000
+        end
+    end
+
+    -- Handle messages
+    local function handleMessage(msg)
+        if msg.type == protocol.REGISTER then
+            handleRegister(msg)
+        elseif msg.type == protocol.STATUS then
+            handleStatus(msg)
+        elseif msg.type == protocol.HEARTBEAT then
+            handleHeartbeat(msg)
+        end
+    end
+
+    -- Check all carts present
+    local function checkAllCartsPresent()
+        if next(stations) == nil then
+            return false
+        end
+
+        for station_id, station in pairs(stations) do
+            if not station.cart_present then
+                return false
+            end
+        end
+
+        return true
+    end
+
+    -- Send dispatch with delay and countdown (non-blocking)
+    local dispatch_state = "idle"  -- idle, waiting, dispatching
+    local dispatch_start_time = nil
+    local last_countdown = nil
+
+    local function sendDispatch()
+        print("")
+        print("[" .. os.date("%H:%M:%S") .. "] ===== ALL CARTS PRESENT =====")
+
+        if config.dispatch_delay > 0 then
+            print("[" .. os.date("%H:%M:%S") .. "] Waiting " .. config.dispatch_delay .. " seconds...")
+            dispatch_state = "waiting"
+            dispatch_start_time = os.epoch("utc") / 1000
+            last_countdown = config.dispatch_delay
+        else
+            -- No delay, dispatch immediately
+            print("[" .. os.date("%H:%M:%S") .. "] DISPATCHING ALL STATIONS")
+            print("")
+            local msg = protocol.createDispatch("ops_center", "ALL")
+            network.broadcast(modem, config.network_channel, msg)
+        end
+    end
+
+    -- Process dispatch delay countdown (called in main loop)
+    local function processDispatchDelay()
+        if dispatch_state == "waiting" then
+            local now = os.epoch("utc") / 1000
+            local elapsed = now - dispatch_start_time
+            local remaining = math.ceil(config.dispatch_delay - elapsed)
+
+            -- Send countdown messages
+            if config.countdown_enabled and remaining > 0 and remaining ~= last_countdown then
+                local countdownMsg = protocol.createCountdown("ops_center", remaining)
+                network.broadcast(modem, config.network_channel, countdownMsg)
+                print("[" .. os.date("%H:%M:%S") .. "] COUNTDOWN: " .. remaining .. " seconds")
+                last_countdown = remaining
+            end
+
+            -- Time to dispatch!
+            if elapsed >= config.dispatch_delay then
+                print("[" .. os.date("%H:%M:%S") .. "] DISPATCHING ALL STATIONS")
+                print("")
+                local msg = protocol.createDispatch("ops_center", "ALL")
+                network.broadcast(modem, config.network_channel, msg)
+                dispatch_state = "idle"
+            end
+        end
+    end
+
+    -- Display status on monitor
+    local mon = display.getOutput()
+    local anim_frame = 0
+
+    local function displayStatus()
+        display.clear(mon, colors.black)
+        local w, h = mon.getSize()
+
+        -- Animated header with border
+        display.drawLine(mon, 1, "=", colors.gray)
+        display.centerText(mon, 2, "COUNCILCRAFT TRANSIT", colors.white, colors.black)
+        display.centerText(mon, 3, "OPERATIONS CENTER", colors.cyan, colors.black)
+        display.drawLine(mon, 4, "=", colors.gray)
+
+        local y = 6
+        local station_count = 0
+        local carts_present = 0
+
+        -- Group stations by line
+        local lines = {}
+        for station_id, station in pairs(stations) do
+            local line = station.line_id
+            if not lines[line] then
+                lines[line] = {}
+            end
+            table.insert(lines[line], station)
+            station_count = station_count + 1
+            if station.cart_present then
+                carts_present = carts_present + 1
+            end
+        end
+
+        -- Display stations by line with beautiful formatting
+        for line_id, line_stations in pairs(lines) do
+            -- Line header with colored badge
+            mon.setCursorPos(2, y)
+            mon.setTextColor(colors.black)
+            mon.setBackgroundColor(colors.cyan)
+            mon.write(" " .. string.upper(line_id) .. " ")
+            mon.setBackgroundColor(colors.black)
+
+            -- Line stats
+            local line_ready = 0
+            for _, station in ipairs(line_stations) do
+                if station.cart_present then line_ready = line_ready + 1 end
+            end
+            mon.setCursorPos(w - 10, y)
+            mon.setTextColor(colors.gray)
+            mon.write(line_ready .. "/" .. #line_stations)
+
+            y = y + 1
+
+            -- Display each station with animated indicators (unified with station displays!)
+            for _, station in ipairs(line_stations) do
+                -- State-based icons and animations (same as station terminal)
+                local statusIcon
+                local statusText
+                local statusColor
+                local secondaryAnim = ""
+                local showSecondaryAnim = false
+
+                local state = station.state or "IN_TRANSIT"
+
+                if state == "DEPARTING" then
+                    statusIcon = anim.icons.departing
+                    statusText = "DEPARTING"
+                    statusColor = colors.orange
+                    secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
+                    showSecondaryAnim = true
+                elseif state == "BOARDING" then
+                    statusIcon = anim.icons.boarding
+                    statusText = "BOARDING"
+                    statusColor = colors.lime
+                    -- Gentle pulsing effect
+                    if anim.shouldFlash(anim_frame, 3) then
+                        statusColor = colors.lightGray
+                    end
+                else  -- IN_TRANSIT
+                    statusIcon = anim.icons.transit
+                    statusText = "IN TRANSIT"
+                    statusColor = colors.yellow
+                    secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
+                    showSecondaryAnim = true
+                end
+
+                mon.setCursorPos(2, y)
+                mon.setTextColor(statusColor)
+                mon.write(statusIcon .. " ")
+                mon.setTextColor(colors.white)
+                mon.write(station.station_id)
+
+                -- Status text with animation
+                local statusX = math.min(w - 18, 28)
+                mon.setCursorPos(statusX, y)
+                mon.setTextColor(statusColor)
+                mon.write(statusText)
+
+                -- Animated indicator (dots for transit, progress bar for departing)
+                if showSecondaryAnim then
+                    mon.setCursorPos(statusX + #statusText + 1, y)
+                    mon.setTextColor(colors.gray)
+                    mon.write(secondaryAnim)
+                end
+
+                -- Trip timing indicator with real-time duration (if available)
+                if station.trip_status and station.trip_status ~= "N/A" then
+                    local timingIcon
+                    local timingText
+                    local timingColor
+                    local shouldFlashTiming = false
+
+                    if station.trip_status == "ON TIME" then
+                        timingIcon = anim.icons.on_time
+                        timingText = "ON TIME"
+                        timingColor = colors.lime
+                    elseif station.trip_status == "EARLY" then
+                        timingIcon = anim.icons.early
+                        timingText = "EARLY"
+                        timingColor = colors.cyan
+                    elseif station.trip_status == "DELAYED" then
+                        timingIcon = anim.icons.delayed
+                        timingText = "DELAYED"
+                        timingColor = colors.red
+                        shouldFlashTiming = true
+                    end
+
+                    -- Flash DELAYED for urgency
+                    local displayTimingColor = timingColor
+                    if shouldFlashTiming and not anim.shouldFlash(anim_frame, 2) then
+                        displayTimingColor = colors.gray
+                    end
+
+                    -- Show trip time with stable layout: [XX] STATUS XXs/XXs
+                    -- Use frozen time if cart has arrived, otherwise show real-time
+                    local trip_time_to_display = nil
+                    if state ~= "IN_TRANSIT" and station.last_completed_trip_time then
+                        -- Cart has arrived - show frozen final trip time
+                        trip_time_to_display = station.last_completed_trip_time
+                    elseif state == "IN_TRANSIT" and station.current_trip_duration then
+                        -- Cart in transit - show live updating time
+                        trip_time_to_display = station.current_trip_duration
+                    end
+
+                    if trip_time_to_display and station.avg_trip_time then
+                        local current = trip_time_to_display
+                        local avg = station.avg_trip_time
+                        local timeStr = string.format("%.2fs/%.2fs", current, avg)
+                        local fullStr = timingIcon .. " " .. timingText .. " " .. timeStr
+
+                        -- Right-align the full display
+                        local timingX = w - #fullStr - 1
+                        mon.setCursorPos(timingX, y)
+                        mon.setTextColor(displayTimingColor)
+                        mon.write(fullStr)
+                    else
+                        -- Show icon + text if we don't have timing data yet
+                        local fullStr = timingIcon .. " " .. timingText
+                        local timingX = w - #fullStr - 1
+                        mon.setCursorPos(timingX, y)
+                        mon.setTextColor(displayTimingColor)
+                        mon.write(fullStr)
+                    end
+                end
+
+                y = y + 1
+            end
+
+            y = y + 1  -- Spacing between lines
+        end
+
+        -- Bottom status section with progress bar
+        if y < h - 5 then y = h - 5 end
+
+        display.drawLine(mon, y, "-", colors.gray)
+        y = y + 1
+
+        -- Main status message
+        local statusMsg
+        local statusColor
+        local statusIcon
+
+        if station_count == 0 then
+            statusMsg = "NO STATIONS REGISTERED"
+            statusColor = colors.red
+            statusIcon = "[!]"
+        elseif carts_present == station_count and station_count > 0 then
+            statusMsg = "DISPATCHING"
+            statusColor = colors.lime
+            statusIcon = "[>>]"
+            -- Flash when dispatching
+            if anim.shouldFlash(anim_frame, 2) then
+                statusColor = colors.white
+            end
+        else
+            statusMsg = "WAITING FOR " .. (station_count - carts_present) .. " CART(S)"
+            statusColor = colors.yellow
+            statusIcon = anim.getSpinner(anim_frame, 2, 3)  -- Fixed width of 3 chars
+        end
+
+        mon.setCursorPos(2, y)
+        mon.setTextColor(statusColor)
+        mon.write(statusIcon .. " " .. statusMsg)
+
+        -- Progress bar for readiness
+        if station_count > 0 then
+            y = y + 1
+            local barWidth = math.min(w - 4, 30)
+            local progress = carts_present / station_count
+            local bar = anim.progressBar(progress, barWidth, "#", "-")
+
+            mon.setCursorPos(2, y)
+            mon.setTextColor(colors.gray)
+            mon.write("Ready: ")
+            mon.setTextColor(colors.cyan)
+            mon.write("[" .. bar .. "]")
+
+            mon.setCursorPos(2 + 7 + barWidth + 3, y)
+            mon.setTextColor(colors.white)
+            mon.write(carts_present .. "/" .. station_count)
+        end
+
+        -- Bottom info bar
+        display.drawLine(mon, h - 1, "-", colors.gray)
+        mon.setCursorPos(2, h)
+        mon.setTextColor(colors.gray)
+        mon.write(os.date("%H:%M:%S"))
+
+        -- Network status
+        mon.setCursorPos(w - 14, h)
+        mon.setTextColor(colors.lime)
+        mon.write("NETWORK ACTIVE")
+
+        -- Management hint
+        if h > 20 then  -- Only show on larger displays
+            mon.setCursorPos(2, h - 2)
+            mon.setTextColor(colors.gray)
+            mon.write("Press [h] for help")
+        end
+    end
+
+    -- Management commands
+    local function showHelp()
+        print("")
+        print("=== MANAGEMENT COMMANDS ===")
+        print("d - Force dispatch all stations")
+        print("r - Reset all station states to IN_TRANSIT")
+        print("s - Show station list")
+        print("h - Show this help")
+        print("===========================")
+        print("")
+    end
+
+    local function forceDispatch()
+        print("")
+        print("[MANUAL] Force dispatching all stations...")
+        local msg = protocol.createDispatch("ops_center", "ALL")
+        network.broadcast(modem, config.network_channel, msg)
+        dispatch_state = "idle"
+        dispatched = false
+        print("[MANUAL] Dispatch command sent!")
+        print("")
+    end
+
+    local function resetAllStations()
+        print("")
+        print("[MANUAL] Resetting all station states...")
+        -- Send a special reset broadcast (stations will treat missing cart as IN_TRANSIT)
+        for station_id, station in pairs(stations) do
+            station.cart_present = false
+            print("[MANUAL] Reset: " .. station_id)
+        end
+        dispatched = false
+        dispatch_state = "idle"
+        print("[MANUAL] All stations reset to IN_TRANSIT")
+        print("")
+    end
+
+    local function showStations()
+        print("")
+        print("=== REGISTERED STATIONS ===")
+        local count = 0
+        for station_id, station in pairs(stations) do
+            count = count + 1
+            local status = station.cart_present and "BOARDING" or "IN_TRANSIT"
+            print(count .. ". " .. station_id .. " (" .. station.line_id .. ") - " .. status)
+        end
+        if count == 0 then
+            print("No stations registered yet.")
+        end
+        print("===========================")
+        print("")
+    end
+
+    -- Initial discovery
+    sendDiscovery()
+    showHelp()
+
+    -- Main loop
+    local last_dispatch_check = 0
+    local dispatched = false
+
+    while true do
+        local now = os.epoch("utc") / 1000
+
+        -- Periodic discovery
+        if now - last_discovery > config.discovery_interval then
+            sendDiscovery()
+            last_discovery = now
+        end
+
+        -- Check dispatch
+        if now - last_dispatch_check > config.dispatch_check_interval then
+            if checkAllCartsPresent() then
+                if not dispatched then
+                    sendDispatch()
+                    dispatched = true
+                end
+            else
+                dispatched = false
+                dispatch_state = "idle"  -- Cancel any pending dispatch if cart leaves
+            end
+            last_dispatch_check = now
+        end
+
+        -- Process non-blocking dispatch delay
+        processDispatchDelay()
+
+        -- Display status and update animation frame
+        local display_interval_ticks = math.floor(config.display_update_interval)
+        if display_interval_ticks < 1 then display_interval_ticks = 1 end
+        if math.floor(now) % display_interval_ticks == 0 then
+            displayStatus()
+            anim_frame = anim_frame + 1
+        end
+
+        -- Check for events (messages OR keyboard)
+        local timer = os.startTimer(0.1)
+        local event, param1, param2, param3, param4, param5 = os.pullEvent()
+
+        if event == "char" then
+            -- Keyboard input
+            os.cancelTimer(timer)
+            if param1 == "d" then
+                forceDispatch()
+            elseif param1 == "r" then
+                resetAllStations()
+            elseif param1 == "s" then
+                showStations()
+            elseif param1 == "h" then
+                showHelp()
+            end
+        elseif event == "modem_message" then
+            -- Network message
+            os.cancelTimer(timer)
+            local message = param4
+            if type(message) == "string" then
+                local decoded = protocol.deserialize(message)
+                if decoded then
+                    handleMessage(decoded)
+                end
+            end
+        elseif event == "timer" and param1 == timer then
+            -- Timeout, continue loop
+        end
+    end
+end
+
+-- ============================================================================
+-- MAIN ENTRY POINT
+-- ============================================================================
+
+local config = loadConfig()
+
+if not config then
+    initialSetup()
+else
+    if config.type == "station" then
+        runStation(config)
+    elseif config.type == "ops" then
+        runOps(config)
+    else
+        print("Invalid config!")
+        fs.delete(CONFIG_FILE)
+        os.reboot()
+    end
+end
