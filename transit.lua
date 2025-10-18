@@ -1229,6 +1229,7 @@ local function runStation(config)
                 if trip_start_time then
                     local trip_duration = now - trip_start_time
                     recordTrip(trip_duration)
+                    trip_start_time = nil  -- Stop timer - trip is complete!
                 end
 
                 print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: ARRIVED (playing announcements...)")
@@ -1607,6 +1608,20 @@ local function runOps(config)
                 mon.write(statusIcon .. " ")
                 mon.setTextColor(colors.white)
                 mon.write(station.station_id)
+
+                -- Heartbeat health indicator
+                local heartbeat_age = now - station.last_heartbeat
+                local heartbeat_color
+                if heartbeat_age < 5 then
+                    heartbeat_color = colors.lime  -- Healthy (< 5s)
+                elseif heartbeat_age < 10 then
+                    heartbeat_color = colors.yellow  -- Stale (5-10s)
+                else
+                    heartbeat_color = colors.red  -- Offline/unhealthy (> 10s)
+                end
+                mon.write(" ")
+                mon.setTextColor(heartbeat_color)
+                mon.write("[" .. string.format("%.0fs", heartbeat_age) .. "]")
 
                 -- Status text with animation
                 local statusX = math.min(w - 18, 28)
