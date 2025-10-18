@@ -488,6 +488,7 @@ audio.station_map = {
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
     ["Ricardo's"] = "RICARDOS",
+    ["Ricardo's (to"] = "RICARDOS_ABRIDGED",
 
     -- Add more stations here as you expand:
     -- ["Station Name"] = "SEQUENCE_KEY",
@@ -508,7 +509,7 @@ audio.sequences = {
         "SG_MRT_BELL",
         "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_PLAINS_DISTRICT_V2",
-        "LOOPS_HERE_AFTER_NAME"
+        "ALIGHT_HINT_V3"
     },
 
     CLOUD_DISTRICT = {
@@ -523,14 +524,16 @@ audio.sequences = {
 
     RICARDOS = {
         "SG_MRT_BELL",
-        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_RICARDOS_V2",
-        "LOOPS_HERE_AFTER_NAME"
     },
 
-    -- Line 1 (Not attached yet)
+    RICARDOS_ABRIDGED = {
+        "SG_MRT_BELL"
+    }
+
     DRAGONSREACH = {
         "SG_MRT_BELL",
+        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_DRAGONSREACH_V2",
         "ALIGHT_HINT_V3"
     },
