@@ -1573,7 +1573,7 @@ local function runOps(config)
             y = y + 1
 
             -- Display each station with animated indicators (unified with station displays!)
-            for _, station in ipairs(line_stations) do
+            for i, station in ipairs(line_stations) do
                 -- State-based icons and animations (same as station terminal)
                 local statusIcon
                 local statusText
@@ -1611,13 +1611,7 @@ local function runOps(config)
                     showSecondaryAnim = true
                 end
 
-                mon.setCursorPos(2, y)
-                mon.setTextColor(statusColor)
-                mon.write(statusIcon .. " ")
-                mon.setTextColor(colors.white)
-                mon.write(station.station_id)
-
-                -- Heartbeat health indicator
+                -- Heartbeat health indicator (MOVED TO LEFT)
                 local heartbeat_age = now - station.last_heartbeat
                 local heartbeat_color
                 if heartbeat_age < 5 then
@@ -1627,12 +1621,44 @@ local function runOps(config)
                 else
                     heartbeat_color = colors.red  -- Offline/unhealthy (> 10s)
                 end
-                mon.write(" ")
+
+                -- Calculate available space for station name
+                -- Layout: [ICON] [HB] NAME          STATUS ANIM
+                local left_side_width = 4 + 5  -- icon (4) + heartbeat (5)
+                local statusX = math.min(w - 18, 28)
+                local available_width = statusX - left_side_width - 2  -- -2 for spacing
+
+                -- Station name with marquee scrolling if too long
+                local station_name = station.station_id
+                local display_name = station_name
+
+                if #station_name > available_width then
+                    -- Name is too long, apply marquee scrolling
+                    -- Use anim_frame + station index for staggered scrolling
+                    local scroll_offset = ((anim_frame + (i * 5)) % (#station_name + 3))  -- +3 for spacing before loop
+
+                    -- Create a looping string with padding
+                    local loop_string = station_name .. "   "  -- Add 3 spaces between loops
+
+                    -- Extract the visible portion
+                    display_name = ""
+                    for j = 1, available_width do
+                        local char_index = ((scroll_offset + j - 1) % #loop_string) + 1
+                        display_name = display_name .. loop_string:sub(char_index, char_index)
+                    end
+                end
+
+                -- Render: [ICON] [HEARTBEAT] NAME
+                mon.setCursorPos(2, y)
+                mon.setTextColor(statusColor)
+                mon.write(statusIcon .. " ")
                 mon.setTextColor(heartbeat_color)
                 mon.write("[" .. string.format("%.0fs", heartbeat_age) .. "]")
+                mon.write(" ")
+                mon.setTextColor(colors.white)
+                mon.write(display_name)
 
                 -- Status text with animation
-                local statusX = math.min(w - 18, 28)
                 mon.setCursorPos(statusX, y)
                 mon.setTextColor(statusColor)
                 mon.write(statusText)
