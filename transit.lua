@@ -259,7 +259,7 @@ local SCRIPT_STATION_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
     heartbeat_interval = 5,        -- Seconds between heartbeat messages
     status_send_interval = 0.5,    -- Seconds between status updates
-    display_update_interval = 0.25, -- Seconds between display redraws (faster = smoother)
+    display_update_interval = 0.5, -- Seconds between display redraws (faster = smoother)
     powered_rail_duration = 4,     -- Seconds to keep powered rail active
     trip_history_size = 10,        -- Number of trips to track for timing average
     on_time_tolerance = 0.10,      -- ±10% = on time
@@ -272,7 +272,7 @@ local SCRIPT_OPS_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
     discovery_interval = 10,        -- Seconds between discovery broadcasts
     dispatch_check_interval = 1,  -- Seconds between dispatch checks
-    display_update_interval = 0.5,    -- Seconds between display redraws
+    display_update_interval = 1,    -- Seconds between display redraws
     dispatch_delay = 1,            -- Seconds to wait before dispatching (ensures audio completes + boarding time)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
     github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"  -- GitHub raw URL for remote updates
