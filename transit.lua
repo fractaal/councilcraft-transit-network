@@ -529,7 +529,7 @@ audio.sequences = {
 
     RICARDOS_ABRIDGED = {
         "SG_MRT_BELL"
-    }
+    },
 
     DRAGONSREACH = {
         "SG_MRT_BELL",
