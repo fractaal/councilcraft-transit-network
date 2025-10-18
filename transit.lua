@@ -601,7 +601,7 @@ end
 -- DFPWM decoder (shared across all audio playback)
 audio.decoder = nil
 
--- Play a single DFPWM audio file
+-- Play a single DFPWM audio file (supports large files via chunking)
 function audio.playDFPWM(speaker, dfpwm_data, volume)
     if not speaker then return false end
     if not dfpwm_data then return false end
@@ -612,19 +612,36 @@ function audio.playDFPWM(speaker, dfpwm_data, volume)
         audio.decoder = dfpwm.make_decoder()
     end
 
-    -- Decode DFPWM to PCM (this returns a table of signed 8-bit samples)
-    local pcm_audio = audio.decoder(dfpwm_data)
+    -- Process audio in chunks (max 16KB DFPWM at a time)
+    -- This is necessary because speaker.playAudio has a buffer limit
+    local chunk_size = 16 * 1024  -- 16KB chunks
+    local pos = 1
 
-    -- Try to play PCM audio
-    local success, err = pcall(function()
-        speaker.playAudio(pcm_audio, volume or 1.0)
-    end)
+    while pos <= #dfpwm_data do
+        -- Extract chunk
+        local chunk_end = math.min(pos + chunk_size - 1, #dfpwm_data)
+        local chunk = dfpwm_data:sub(pos, chunk_end)
 
-    if not success then
-        print("[AUDIO] playAudio error: " .. tostring(err))
+        -- Decode DFPWM chunk to PCM
+        local pcm_audio = audio.decoder(chunk)
+
+        -- Try to play this chunk
+        local success, err = pcall(function()
+            while not speaker.playAudio(pcm_audio, volume or 1.0) do
+                -- Wait for speaker buffer to have space
+                os.pullEvent("speaker_audio_empty")
+            end
+        end)
+
+        if not success then
+            print("[AUDIO] playAudio error: " .. tostring(err))
+            return false
+        end
+
+        pos = pos + chunk_size
     end
 
-    return success
+    return true
 end
 
 -- Play a sequence of sounds (blocking, waits for each to finish)
