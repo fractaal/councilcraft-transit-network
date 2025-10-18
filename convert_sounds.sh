@@ -46,37 +46,12 @@ convert_file() {
     fi
 }
 
-# Define files to convert (prefer _V2 versions, skip non-V2 if V2 exists)
-FILES_TO_CONVERT=(
-    # Bells
-    "SG_MRT_BELL.wav"
-
-    # Station-specific announcements (V2 versions)
-    "ARRIVAL_CLOUD_DISTRICT_V2.wav"
-    "ARRIVAL_DRAGONSREACH_V2.wav"
-    "ARRIVAL_PLAINS_DISTRICT_V2.wav"
-    "ARRIVAL_RICARDOS_V2.wav"
-
-    # Generic arrival (no V2 version)
-    "ARRIVAL_GENERIC.wav"
-
-    # Hints (use V2)
-    "ALIGHT_HINT_V2.wav"
-
-    # Other sounds
-    "OTHER_TERMINATES_HERE.mp3"
-    "DEPARTURE_CART_DEPARTING.wav"
-)
-
-# Process specified files
-for filename in "${FILES_TO_CONVERT[@]}"; do
-    file="$SOUND_SRC/$filename"
-    if [ -f "$file" ]; then
-        convert_file "$file"
-    else
-        echo "  WARNING: $filename not found, skipping..."
-    fi
+# Auto-discover and convert all audio files in sound_sources/
+shopt -s nullglob  # Make glob return empty if no matches
+for file in "$SOUND_SRC"/*.{wav,mp3,ogg,flac}; do
+    [ -f "$file" ] && convert_file "$file"
 done
+shopt -u nullglob
 
 echo ""
 echo "============================================"
