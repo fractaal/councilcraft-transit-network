@@ -603,9 +603,16 @@ function audio.playDFPWM(speaker, audio_data, volume)
     if not speaker then return false end
     if not audio_data then return false end
 
+    -- Convert string to table of bytes for speaker.playAudio
+    -- CC:Tweaked's speaker.playAudio expects a table, not a string
+    local audio_table = {}
+    for i = 1, #audio_data do
+        audio_table[i] = string.byte(audio_data, i)
+    end
+
     -- Try to play DFPWM audio
     local success, err = pcall(function()
-        speaker.playAudio(audio_data, volume or 1.0)
+        speaker.playAudio(audio_table, volume or 1.0)
     end)
 
     if not success then
