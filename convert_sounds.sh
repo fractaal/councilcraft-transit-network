@@ -35,9 +35,9 @@ convert_file() {
     local basename=$(basename "$input")
     local name="${basename%.*}"
     local output="$SOUND_OUT/${name}.dfpwm"
-    
+
     echo -n "  Converting: $basename -> ${name}.dfpwm ... "
-    
+
     if ffmpeg -i "$input" -ac 1 -ar 48000 -f dfpwm "$output" -y -loglevel error; then
         local size=$(du -h "$output" | cut -f1)
         echo "✓ ($size)"
@@ -46,10 +46,35 @@ convert_file() {
     fi
 }
 
-# Process all audio files
-for file in "$SOUND_SRC"/*.wav "$SOUND_SRC"/*.mp3; do
+# Define files to convert (prefer _V2 versions, skip non-V2 if V2 exists)
+FILES_TO_CONVERT=(
+    # Bells
+    "SG_MRT_BELL.wav"
+
+    # Station-specific announcements (V2 versions)
+    "ARRIVAL_CLOUD_DISTRICT_V2.wav"
+    "ARRIVAL_DRAGONSREACH_V2.wav"
+    "ARRIVAL_PLAINS_DISTRICT_V2.wav"
+    "ARRIVAL_RICARDOS_V2.wav"
+
+    # Generic arrival (no V2 version)
+    "ARRIVAL_GENERIC.wav"
+
+    # Hints (use V2)
+    "ALIGHT_HINT_V2.wav"
+
+    # Other sounds
+    "OTHER_TERMINATES_HERE.mp3"
+    "DEPARTURE_CART_DEPARTING.wav"
+)
+
+# Process specified files
+for filename in "${FILES_TO_CONVERT[@]}"; do
+    file="$SOUND_SRC/$filename"
     if [ -f "$file" ]; then
         convert_file "$file"
+    else
+        echo "  WARNING: $filename not found, skipping..."
     fi
 done
 

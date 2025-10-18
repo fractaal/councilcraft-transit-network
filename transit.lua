@@ -270,10 +270,10 @@ local SCRIPT_STATION_CONFIG = {
 
 local SCRIPT_OPS_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
-    discovery_interval = 2,        -- Seconds between discovery broadcasts
+    discovery_interval = 10,        -- Seconds between discovery broadcasts
     dispatch_check_interval = 1,  -- Seconds between dispatch checks
     display_update_interval = 0.25,    -- Seconds between display redraws
-    dispatch_delay = 5,             -- Seconds to wait before dispatching (for passengers)
+    dispatch_delay = 0,             -- Seconds to wait before dispatching (for passengers)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
     pastebin_id = "uNwTJ5Sc"       -- Pastebin ID for remote updates
 }
@@ -455,15 +455,14 @@ audio.library = {
     -- Chimes
     SG_MRT_BELL = "SG_MRT_BELL.dfpwm",  -- Generic Singapore MRT arrival bell
 
-    -- Station-specific announcements
+    -- Station-specific announcements (V2 versions)
     ARRIVAL_GENERIC = "ARRIVAL_GENERIC.dfpwm",
-    ARRIVAL_CLOUD_DISTRICT = "ARRIVAL_CLOUD_DISTRICT.dfpwm",
-    ARRIVAL_DRAGONSREACH = "ARRIVAL_DRAGONSREACH.dfpwm",
-    ARRIVAL_PLAINS_DISTRICT = "ARRIVAL_PLAINS_DISTRICT.dfpwm",
-    ARRIVAL_RICARDOS = "ARRIVAL_RICARDOS.dfpwm",
+    ARRIVAL_CLOUD_DISTRICT_V2 = "ARRIVAL_CLOUD_DISTRICT_V2.dfpwm",
+    ARRIVAL_DRAGONSREACH_V2 = "ARRIVAL_DRAGONSREACH_V2.dfpwm",
+    ARRIVAL_PLAINS_DISTRICT_V2 = "ARRIVAL_PLAINS_DISTRICT_V2.dfpwm",
+    ARRIVAL_RICARDOS_V2 = "ARRIVAL_RICARDOS_V2.dfpwm",
 
-    -- Hints and instructions
-    ALIGHT_HINT = "ALIGHT_HINT.dfpwm",
+    -- Hints and instructions (V2 version)
     ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
     OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
 
@@ -498,26 +497,26 @@ audio.sequences = {
     -- Station-specific arrival sequences
     CLOUD_DISTRICT = {
         "SG_MRT_BELL",
-        "ARRIVAL_CLOUD_DISTRICT",
+        "ARRIVAL_CLOUD_DISTRICT_V2",
         "ALIGHT_HINT_V2"
     },
 
     DRAGONSREACH = {
         "SG_MRT_BELL",
-        "ARRIVAL_DRAGONSREACH",
+        "ARRIVAL_DRAGONSREACH_V2",
         "ALIGHT_HINT_V2"
     },
 
     PLAINS_DISTRICT = {
         "SG_MRT_BELL",
-        "ARRIVAL_PLAINS_DISTRICT",
+        "ARRIVAL_PLAINS_DISTRICT_V2",
         "ALIGHT_HINT_V2",
         "OTHER_TERMINATES_HERE"
     },
 
     RICARDOS = {
         "SG_MRT_BELL",
-        "ARRIVAL_RICARDOS",
+        "ARRIVAL_RICARDOS_V2",
         "ALIGHT_HINT_V2",
         "OTHER_TERMINATES_HERE"
     },
@@ -685,14 +684,24 @@ function audio.playSequence(speaker, sequence_name, station_id)
     -- Determine which sequence to use
     local sequence = nil
     if sequence_name == "arrival" then
-        -- Look up station in mapping table
+        -- Look up station in mapping table using "contains" logic
         local sequence_key = nil
-        if station_id and audio.station_map[station_id] then
-            -- Exact match in mapping table (e.g., "Cloud District" → "CLOUD_DISTRICT")
-            sequence_key = audio.station_map[station_id]
-            print("[AUDIO] Station '" .. station_id .. "' → sequence '" .. sequence_key .. "'")
+        if station_id then
+            -- Try to find a match where station_id contains any of the mapping keys
+            for friendly_name, seq_key in pairs(audio.station_map) do
+                if string.find(station_id, friendly_name, 1, true) then
+                    -- Found a match! (plain text search, case-sensitive)
+                    sequence_key = seq_key
+                    print("[AUDIO] Station '" .. station_id .. "' contains '" .. friendly_name .. "' → sequence '" .. sequence_key .. "'")
+                    break
+                end
+            end
+
+            if not sequence_key then
+                print("[AUDIO] Station '" .. tostring(station_id) .. "' does not match any mapping, using fallback")
+            end
         else
-            print("[AUDIO] Station '" .. tostring(station_id) .. "' not found in mapping, using fallback")
+            print("[AUDIO] No station_id provided, using fallback")
         end
 
         -- Get the sequence
