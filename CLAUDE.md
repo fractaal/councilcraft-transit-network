@@ -170,9 +170,16 @@ ffmpeg -i input.mp3 -ac 1 -ar 48000 -f dfpwm output.dfpwm
 - **Always available**: No external dependencies, pure Minecraft sounds
 
 #### Behavior
-- **Arrival chime**: Plays once when cart arrives (arrival_chime.dfpwm or noteblock sequence)
-- **Door closing chirp**: Plays continuously during DEPARTING state (door_closing.dfpwm or noteblock chirp)
+- **Arrival sequence**: Plays multi-sound sequence when cart arrives (e.g., Bell → "Arriving at Cloud District" → "Please alight")
+- **Departure sound**: Plays once when entering DEPARTING state (should contain full announcement + chirp pre-layered)
+- **Station-specific**: Automatically matches station ID to sequence (e.g., `station_cloud_district` → `CLOUD_DISTRICT` sequence)
+- **Fallback**: Unknown stations use `_FALLBACK` sequence with generic announcement
 - **Speakers optional**: System works without audio, auto-discovers if present
+
+#### Important Notes
+- **No audio mixing**: ComputerCraft can't overlay multiple PCM streams - layer sounds in your audio editor before converting to DFPWM
+- **Timing**: Sequences auto-calculate duration based on file size (~6KB per second)
+- **One sound at a time**: Each sequence plays sounds serially with 0.1s pauses between
 
 ### Display Updates
 - **Stations**: Default 0.1s (10 FPS) - smooth animations

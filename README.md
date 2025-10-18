@@ -205,8 +205,8 @@ The system supports **real Singapore MRT audio** via DFPWM files! By default, it
 
 ### Audio Behavior
 
-- **Arrival chime**: Plays once when cart arrives at station
-- **Door closing chirp**: Plays continuously during the 2-second DEPARTING countdown
+- **Arrival sequence**: Plays once when cart arrives at station (multi-sound sequence)
+- **Departure sound**: Plays once when entering DEPARTING state (should contain full announcement + chirp)
 - **Caching**: Audio files are cached in `/sounds/` on each computer (no repeated downloads)
 - **Fallback**: If DFPWM fails, the system automatically uses noteblock sounds
 

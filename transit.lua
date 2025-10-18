@@ -398,33 +398,108 @@ local audio = {}
 -- ============================================================================
 -- AUDIO CONFIGURATION
 -- ============================================================================
--- Replace these URLs with your actual DFPWM file URLs from GitHub raw hosting
--- Example: "https://raw.githubusercontent.com/username/repo/main/sounds/arrival.dfpwm"
+-- Replace BASE_URL with your actual GitHub raw URL
+-- Example: "https://raw.githubusercontent.com/username/repo/main/sounds/"
 
 audio.config = {
-    -- Arrival chime (plays when cart arrives at station)
-    arrival_chime_url = "PLACEHOLDER_ARRIVAL_CHIME_URL",
-
-    -- Door closing chirp (plays continuously during DEPARTING state)
-    door_closing_url = "PLACEHOLDER_DOOR_CLOSING_URL",
+    -- Base URL for all sound files (set this to your GitHub raw sounds folder)
+    base_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/",
 
     -- Cache directory for downloaded sounds
     cache_dir = "/sounds/",
 
     -- Enable/disable DFPWM playback (fallback to noteblock if false or download fails)
-    enable_dfpwm = true
+    enable_dfpwm = true,
+
+    -- Preload all sounds on startup (recommended for smooth playback)
+    preload_sounds = true
+}
+
+-- ============================================================================
+-- AUDIO LIBRARY MANIFEST
+-- ============================================================================
+-- Define all available sound files here
+
+audio.library = {
+    -- Chimes
+    SG_MRT_BELL = "SG_MRT_BELL.dfpwm",  -- Generic Singapore MRT arrival bell
+
+    -- Station-specific announcements
+    ARRIVAL_GENERIC = "ARRIVAL_GENERIC.dfpwm",
+    ARRIVAL_CLOUD_DISTRICT = "ARRIVAL_CLOUD_DISTRICT.dfpwm",
+    ARRIVAL_DRAGONSREACH = "ARRIVAL_DRAGONSREACH.dfpwm",
+    ARRIVAL_PLAINS_DISTRICT = "ARRIVAL_PLAINS_DISTRICT.dfpwm",
+    ARRIVAL_RICARDOS = "ARRIVAL_RICARDOS.dfpwm",
+
+    -- Hints and instructions
+    ALIGHT_HINT = "ALIGHT_HINT.dfpwm",
+
+    -- Departure sounds
+    DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm"
+}
+
+-- ============================================================================
+-- AUDIO SEQUENCES (Per-Station Configuration)
+-- ============================================================================
+-- Define multi-sound sequences for each station
+-- Sequences play in order with automatic spacing between sounds
+
+audio.sequences = {
+    -- Station-specific arrival sequences
+    CLOUD_DISTRICT = {
+        "SG_MRT_BELL",
+        "ARRIVAL_CLOUD_DISTRICT",
+        "ALIGHT_HINT"
+    },
+
+    DRAGONSREACH = {
+        "SG_MRT_BELL",
+        "ARRIVAL_DRAGONSREACH",
+        "ALIGHT_HINT"
+    },
+
+    PLAINS_DISTRICT = {
+        "SG_MRT_BELL",
+        "ARRIVAL_PLAINS_DISTRICT",
+        "ALIGHT_HINT"
+    },
+
+    RICARDOS = {
+        "SG_MRT_BELL",
+        "ARRIVAL_RICARDOS",
+        "ALIGHT_HINT"
+    },
+
+    -- Fallback sequence (used if station_id doesn't match)
+    _FALLBACK = {
+        "SG_MRT_BELL",
+        "ARRIVAL_GENERIC",
+        "ALIGHT_HINT"
+    },
+
+    -- Departure sequence (same for all stations)
+    _DEPARTURE = {
+        "DEPARTURE_CART_DEPARTING"
+    }
 }
 
 -- ============================================================================
 -- DFPWM AUDIO SYSTEM
 -- ============================================================================
 
+-- Audio cache (in-memory storage of loaded sounds)
+audio.cache = {}
+audio.cache_initialized = false
+
 -- Download and cache a sound file
-function audio.downloadSound(url, filename)
+function audio.downloadSound(filename)
     if not audio.config.enable_dfpwm then return nil end
-    if url == "" or url:sub(1, 11) == "PLACEHOLDER" then return nil end
+    if not audio.config.base_url or audio.config.base_url == "" or audio.config.base_url:sub(1, 11) == "PLACEHOLDER" then
+        return nil
+    end
 
     local cache_path = audio.config.cache_dir .. filename
+    local url = audio.config.base_url .. filename
 
     -- Check cache first
     if fs.exists(cache_path) then
@@ -459,7 +534,54 @@ function audio.downloadSound(url, filename)
     return nil
 end
 
--- Play DFPWM audio or fallback to noteblock
+-- Preload all sounds from library into memory
+function audio.preloadAll()
+    if not audio.config.enable_dfpwm or not audio.config.preload_sounds then
+        audio.cache_initialized = true
+        return
+    end
+
+    print("Preloading audio library...")
+    local loaded = 0
+    local total = 0
+
+    for name, filename in pairs(audio.library) do
+        total = total + 1
+        local data = audio.downloadSound(filename)
+        if data then
+            audio.cache[name] = data
+            loaded = loaded + 1
+            print("  [OK] " .. name)
+        else
+            print("  [SKIP] " .. name .. " (download failed)")
+        end
+    end
+
+    audio.cache_initialized = true
+    print("Loaded " .. loaded .. "/" .. total .. " sounds")
+end
+
+-- Get sound data (from cache or download)
+function audio.getSound(sound_name)
+    -- Check in-memory cache first
+    if audio.cache[sound_name] then
+        return audio.cache[sound_name]
+    end
+
+    -- Try to download and cache
+    local filename = audio.library[sound_name]
+    if filename then
+        local data = audio.downloadSound(filename)
+        if data then
+            audio.cache[sound_name] = data
+            return data
+        end
+    end
+
+    return nil
+end
+
+-- Play a single DFPWM audio file
 function audio.playDFPWM(speaker, audio_data, volume)
     if not speaker then return false end
     if not audio_data then return false end
@@ -470,6 +592,47 @@ function audio.playDFPWM(speaker, audio_data, volume)
     end)
 
     return success
+end
+
+-- Play a sequence of sounds (blocking, waits for each to finish)
+function audio.playSequence(speaker, sequence_name, station_id)
+    if not speaker then return false end
+
+    -- Determine which sequence to use
+    local sequence = nil
+    if sequence_name == "arrival" then
+        -- Try station-specific sequence first
+        local station_key = station_id and station_id:upper():gsub("^STATION_", "")
+        if station_key and audio.sequences[station_key] then
+            sequence = audio.sequences[station_key]
+        else
+            -- Fallback to generic
+            sequence = audio.sequences._FALLBACK
+        end
+    elseif sequence_name == "departure" then
+        sequence = audio.sequences._DEPARTURE
+    else
+        return false
+    end
+
+    if not sequence then return false end
+
+    -- Play each sound in the sequence
+    for _, sound_name in ipairs(sequence) do
+        local audio_data = audio.getSound(sound_name)
+        if audio_data then
+            -- Play sound
+            if not audio.playDFPWM(speaker, audio_data, 1.0) then
+                return false  -- Failed to play, stop sequence
+            end
+
+            -- Wait for sound to finish (estimate: ~6KB per second of DFPWM)
+            local duration = #audio_data / 6000
+            sleep(duration + 0.1)  -- Small buffer between sounds
+        end
+    end
+
+    return true
 end
 
 -- ============================================================================
@@ -516,13 +679,12 @@ end
 -- PUBLIC API (with automatic fallback)
 -- ============================================================================
 
--- Play arrival chime: Tries DFPWM first, falls back to noteblock
-function audio.playArrivalChime(speaker)
+-- Play arrival sequence: Tries DFPWM sequence first, falls back to noteblock
+function audio.playArrivalChime(speaker, station_id)
     if not speaker then return end
 
-    -- Try DFPWM
-    local audio_data = audio.downloadSound(audio.config.arrival_chime_url, "arrival_chime.dfpwm")
-    if audio_data and audio.playDFPWM(speaker, audio_data, 1.0) then
+    -- Try DFPWM sequence
+    if audio.playSequence(speaker, "arrival", station_id) then
         return  -- Success!
     end
 
@@ -535,24 +697,10 @@ end
 function audio.playDoorClosingChirp(speaker)
     if not speaker then return end
 
-    -- Try DFPWM (but don't download every call - check cache only)
-    local cache_path = audio.config.cache_dir .. "door_closing.dfpwm"
-    if fs.exists(cache_path) then
-        local file = fs.open(cache_path, "rb")
-        if file then
-            local audio_data = file.readAll()
-            file.close()
-
-            if audio.playDFPWM(speaker, audio_data, 0.8) then
-                return  -- Success!
-            end
-        end
-    else
-        -- First time: try to download
-        local audio_data = audio.downloadSound(audio.config.door_closing_url, "door_closing.dfpwm")
-        if audio_data and audio.playDFPWM(speaker, audio_data, 0.8) then
-            return  -- Success!
-        end
+    -- Try DFPWM departure sound
+    local audio_data = audio.getSound("DEPARTURE_CART_DEPARTING")
+    if audio_data and audio.playDFPWM(speaker, audio_data, 0.8) then
+        return  -- Success!
     end
 
     -- Fallback to noteblock
@@ -579,7 +727,7 @@ local function runStation(config)
 
     -- Departing state timer
     local departing_start_time = nil
-    local last_chirp_time = 0  -- Track last door closing chirp
+    local departure_sound_played = false  -- Track if departure sound has been played
 
     -- Setup
     term.clear()
@@ -603,6 +751,11 @@ local function runStation(config)
     else
         print("No speaker found. Audio disabled.")
     end
+
+    -- Preload audio library
+    print("")
+    audio.preloadAll()
+    print("")
 
     print("Waiting for DISCOVER from ops center...")
     print("")
@@ -901,35 +1054,27 @@ local function runStation(config)
 
                 print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: BOARDING")
 
-                -- Play arrival chime (Singapore MRT inspired!)
-                audio.playArrivalChime(speaker)
+                -- Play arrival chime sequence (station-specific or fallback!)
+                audio.playArrivalChime(speaker, config.station_id)
 
                 sendStatus()
             end
 
         elseif state == "DEPARTING" then
-            -- Play continuous door closing chirps during entire DEPARTING state
-            if now - last_chirp_time >= 0.05 then
-                audio.playDoorClosingChirp(speaker)
-                last_chirp_time = now
+            -- Play departure sound ONCE at the start of DEPARTING state
+            if not departure_sound_played then
+                audio.playDoorClosingChirp(speaker)  -- Plays "Cart Departing" + chirp audio
+                departure_sound_played = true
             end
 
             -- Non-blocking delay in DEPARTING state
             if now - departing_start_time >= config.departing_delay then
                 print("[" .. os.date("%H:%M:%S") .. "] Activating powered rail...")
 
-                -- Activate powered rail for duration (chirps continue via loop above)
+                -- Activate powered rail for duration (no audio during this - already played)
                 activatePoweredRail(true)
                 local rail_start = now
                 while (os.epoch("utc") / 1000) - rail_start < config.powered_rail_duration do
-                    local loop_now = os.epoch("utc") / 1000
-
-                    -- Continue chirping during rail activation
-                    if loop_now - last_chirp_time >= 0.05 then
-                        audio.playDoorClosingChirp(speaker)
-                        last_chirp_time = loop_now
-                    end
-
                     -- Still handle messages/display during rail activation
                     displayStationStatus()
                     local msg, channel = network.receiveWithTimeout(0.05)
@@ -942,6 +1087,7 @@ local function runStation(config)
                 state = "IN_TRANSIT"
                 cart_present = false
                 trip_start_time = os.epoch("utc") / 1000  -- Start timing new trip
+                departure_sound_played = false  -- Reset for next departure
                 sendStatus()
             end
         end
