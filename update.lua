@@ -1,9 +1,9 @@
 -- update.lua
 -- Quick updater for CouncilCraft Transit Network
--- Usage: Just run "update" to update transit.lua from pastebin
+-- Usage: Just run "update" to update transit.lua from GitHub
 
 local CONFIG_FILE = "/.update_config"
-local DEFAULT_PASTEBIN_ID = "uNwTJ5Sc"
+local DEFAULT_GITHUB_URL = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"
 local TARGET_FILE = "startup/transit.lua"
 
 -- Load or create update config
@@ -17,7 +17,7 @@ local function loadConfig()
     else
         -- Create default config
         local config = {
-            pastebin_id = DEFAULT_PASTEBIN_ID
+            github_url = DEFAULT_GITHUB_URL
         }
         local file = fs.open(CONFIG_FILE, "w")
         file.write(textutils.serialize(config))
@@ -33,7 +33,7 @@ local function update()
     print("")
 
     local config = loadConfig()
-    print("Pastebin ID: " .. config.pastebin_id)
+    print("GitHub URL: " .. config.github_url)
     print("Target: " .. TARGET_FILE)
     print("")
 
@@ -43,16 +43,25 @@ local function update()
         fs.delete(TARGET_FILE)
     end
 
-    -- Download from pastebin
-    print("Downloading from pastebin...")
-    local result = shell.run("pastebin", "get", config.pastebin_id, TARGET_FILE)
+    -- Download from GitHub
+    print("Downloading from GitHub...")
+    local response = http.get(config.github_url)
 
-    if not result then
+    if not response then
         print("")
-        print("ERROR: Failed to download from pastebin!")
-        print("Check your pastebin ID in " .. CONFIG_FILE)
+        print("ERROR: Failed to download from GitHub!")
+        print("Check your GitHub URL in " .. CONFIG_FILE)
         return false
     end
+
+    -- Read content
+    local content = response.readAll()
+    response.close()
+
+    -- Write to file
+    local file = fs.open(TARGET_FILE, "w")
+    file.write(content)
+    file.close()
 
     print("")
     print("Update successful!")

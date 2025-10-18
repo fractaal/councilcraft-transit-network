@@ -51,7 +51,7 @@ function protocol.createStatus(station_id, cart_present, trip_status, avg_trip_t
         cart_present = cart_present,
         trip_status = trip_status or "N/A",
         avg_trip_time = avg_trip_time,
-        state = state or "IN_TRANSIT",  -- IN_TRANSIT, BOARDING, DEPARTING
+        state = state or "IN_TRANSIT",  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING
         timestamp = os.epoch("utc")
     }
 end
@@ -82,11 +82,11 @@ function protocol.createCountdown(from, seconds_remaining)
     }
 end
 
-function protocol.createUpdateCommand(from, pastebin_id, target)
+function protocol.createUpdateCommand(from, github_url, target)
     return {
         type = protocol.UPDATE_COMMAND,
         from = from,
-        pastebin_id = pastebin_id,
+        github_url = github_url,
         target = target or "ALL",
         timestamp = os.epoch("utc")
     }
@@ -265,7 +265,7 @@ local SCRIPT_STATION_CONFIG = {
     on_time_tolerance = 0.10,      -- ±10% = on time
     early_threshold = -0.05,       -- >5% early = EARLY
     delayed_threshold = 0.1,      -- >5% late = DELAYED
-    departing_delay = 4            -- Seconds in DEPARTING state before cart leaves
+    departing_delay = 3.5            -- Seconds in DEPARTING state before cart leaves
 }
 
 local SCRIPT_OPS_CONFIG = {
@@ -273,9 +273,9 @@ local SCRIPT_OPS_CONFIG = {
     discovery_interval = 10,        -- Seconds between discovery broadcasts
     dispatch_check_interval = 1,  -- Seconds between dispatch checks
     display_update_interval = 0.25,    -- Seconds between display redraws
-    dispatch_delay = 0,             -- Seconds to wait before dispatching (for passengers)
+    dispatch_delay = 1,            -- Seconds to wait before dispatching (ensures audio completes + boarding time)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
-    pastebin_id = "uNwTJ5Sc"       -- Pastebin ID for remote updates
+    github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"  -- GitHub raw URL for remote updates
 }
 
 -- ===================================================================
@@ -464,6 +464,11 @@ audio.library = {
 
     -- Hints and instructions (V2 version)
     ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
+    ALIGHT_HINT_V3 = "ALIGHT_HINT_V3.dfpwm",
+
+    LOOPS_HERE_BEFORE_NAME = "LOOPS_HERE_BEFORE_NAME.dfpwm",
+    LOOPS_HERE_AFTER_NAME = "LOOPS_HERE_AFTER_NAME.dfpwm",
+
     OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
 
     -- Departure sounds
@@ -478,6 +483,7 @@ audio.library = {
 
 audio.station_map = {
     -- Friendly Station Name → Sequence Key
+    ["Cloud District (to"] = "CLOUD_DISTRICT_ABRIDGED",
     ["Cloud District"] = "CLOUD_DISTRICT",
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
@@ -495,30 +501,38 @@ audio.station_map = {
 
 audio.sequences = {
     -- Station-specific arrival sequences
-    CLOUD_DISTRICT = {
-        "SG_MRT_BELL",
-        "ARRIVAL_CLOUD_DISTRICT_V2",
-        "ALIGHT_HINT_V2"
-    },
 
-    DRAGONSREACH = {
-        "SG_MRT_BELL",
-        "ARRIVAL_DRAGONSREACH_V2",
-        "ALIGHT_HINT_V2"
-    },
+    -- Line 1 sequence, in order
 
     PLAINS_DISTRICT = {
         "SG_MRT_BELL",
+        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_PLAINS_DISTRICT_V2",
-        "ALIGHT_HINT_V2",
-        "OTHER_TERMINATES_HERE"
+        "LOOPS_HERE_AFTER_NAME"
+    },
+
+    CLOUD_DISTRICT = {
+        "SG_MRT_BELL",
+        "ARRIVAL_CLOUD_DISTRICT_V2",
+        "ALIGHT_HINT_V3"
+    },
+
+    CLOUD_DISTRICT_ABRIDGED = {
+        "SG_MRT_BELL"
     },
 
     RICARDOS = {
         "SG_MRT_BELL",
+        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_RICARDOS_V2",
-        "ALIGHT_HINT_V2",
-        "OTHER_TERMINATES_HERE"
+        "LOOPS_HERE_AFTER_NAME"
+    },
+
+    -- Line 1 (Not attached yet)
+    DRAGONSREACH = {
+        "SG_MRT_BELL",
+        "ARRIVAL_DRAGONSREACH_V2",
+        "ALIGHT_HINT_V3"
     },
 
     -- Fallback sequence (used if station_id doesn't match)
@@ -821,7 +835,7 @@ end
 
 local function runStation(config)
     -- State
-    local state = "IN_TRANSIT"  -- IN_TRANSIT, BOARDING, DEPARTING
+    local state = "IN_TRANSIT"  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING
     local cart_present = false
     local last_heartbeat = 0
     local last_status_send = 0
@@ -983,7 +997,7 @@ local function runStation(config)
         if msg.target == "ALL" or msg.target == config.station_id then
             print("")
             print("[UPDATE] Remote update command received!")
-            print("[UPDATE] Pastebin ID: " .. msg.pastebin_id)
+            print("[UPDATE] GitHub URL: " .. msg.github_url)
             print("[UPDATE] Deleting old version...")
 
             -- Delete all possible startup file locations
@@ -1000,15 +1014,24 @@ local function runStation(config)
                 fs.makeDir("startup")
             end
 
-            print("[UPDATE] Downloading from pastebin...")
+            print("[UPDATE] Downloading from GitHub...")
             local target_file = "startup/transit.lua"
-            local result = shell.run("pastebin", "get", msg.pastebin_id, target_file)
 
-            if not result then
-                print("[UPDATE] ERROR: Failed to download!")
+            -- Download from GitHub using http.get()
+            local response = http.get(msg.github_url)
+            if not response then
+                print("[UPDATE] ERROR: Failed to download from GitHub!")
                 print("[UPDATE] System may be broken - manual fix required")
                 return
             end
+
+            local content = response.readAll()
+            response.close()
+
+            -- Write to file
+            local file = fs.open(target_file, "w")
+            file.write(content)
+            file.close()
 
             print("[UPDATE] Download complete!")
             print("[UPDATE] Rebooting in 2 seconds...")
@@ -1074,6 +1097,13 @@ local function runStation(config)
             if anim.shouldFlash(anim_frame, 3) then
                 statusColor = colors.lightGray
             end
+        elseif state == "ARRIVED" then
+            statusIcon = anim.icons.present
+            statusText = "ARRIVED"
+            statusColor = colors.cyan
+            -- Spinner to show announcements playing
+            shouldAnimate = true
+            secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
         else  -- IN_TRANSIT
             statusIcon = anim.icons.transit
             statusText = "IN TRANSIT"
@@ -1193,7 +1223,7 @@ local function runStation(config)
             local detector_active = checkDetector()
             if detector_active and not cart_present then
                 cart_present = true
-                state = "BOARDING"
+                state = "ARRIVED"
 
                 -- Calculate trip time if we have a start time
                 if trip_start_time then
@@ -1201,13 +1231,26 @@ local function runStation(config)
                     recordTrip(trip_duration)
                 end
 
-                print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: BOARDING")
+                print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: ARRIVED (playing announcements...)")
+
+                -- Send ARRIVED status immediately so ops center sees the cart
+                -- but doesn't start dispatch countdown yet
+                sendStatus()
 
                 -- Play arrival chime sequence (station-specific or fallback!)
+                -- This is BLOCKING - station won't respond to messages during playback
                 audio.playArrivalChime(speaker, config.station_id)
 
+                -- Audio complete! Now ready to accept dispatch
+                print("[" .. os.date("%H:%M:%S") .. "] Announcements complete! Status: BOARDING")
+                state = "BOARDING"
                 sendStatus()
             end
+
+        elseif state == "ARRIVED" then
+            -- Wait for audio to complete (handled in IN_TRANSIT transition above)
+            -- This state should be very brief, just during audio playback
+            -- Nothing to do here - just waiting
 
         elseif state == "DEPARTING" then
             -- Play departure sound ONCE at the start of DEPARTING state
@@ -1305,21 +1348,32 @@ local function runOps(config)
         local station_id = msg.station_id
 
         if not stations[station_id] then
+            -- NEW STATION: Initialize with defaults
             print("[" .. os.date("%H:%M:%S") .. "] NEW STATION: " .. station_id .. " (Line: " .. msg.line_id .. ")")
-        end
 
-        stations[station_id] = {
-            station_id = station_id,
-            line_id = msg.line_id,
-            cart_present = false,
-            last_heartbeat = os.epoch("utc") / 1000,
-            has_display = msg.has_display or false,
-            trip_status = "N/A",
-            avg_trip_time = nil,
-            state = "IN_TRANSIT",
-            current_trip_duration = nil,
-            last_completed_trip_time = nil  -- Store the final trip time when cart arrives
-        }
+            stations[station_id] = {
+                station_id = station_id,
+                line_id = msg.line_id,
+                cart_present = false,
+                last_heartbeat = os.epoch("utc") / 1000,
+                has_display = msg.has_display or false,
+                trip_status = "N/A",
+                avg_trip_time = nil,
+                state = "IN_TRANSIT",
+                current_trip_duration = nil,
+                last_completed_trip_time = nil  -- Store the final trip time when cart arrives
+            }
+        else
+            -- EXISTING STATION: Update identity fields only, preserve runtime state
+            print("[" .. os.date("%H:%M:%S") .. "] RE-REGISTER: " .. station_id .. " (preserving state)")
+
+            stations[station_id].station_id = station_id
+            stations[station_id].line_id = msg.line_id
+            stations[station_id].has_display = msg.has_display or false
+            stations[station_id].last_heartbeat = os.epoch("utc") / 1000
+            -- cart_present, state, trip_status, avg_trip_time, current_trip_duration,
+            -- last_completed_trip_time are preserved from existing state
+        end
     end
 
     -- Handle status
@@ -1392,14 +1446,15 @@ local function runOps(config)
         end
     end
 
-    -- Check all carts present
+    -- Check all carts present AND ready (in BOARDING state, not just ARRIVED)
     local function checkAllCartsPresent()
         if next(stations) == nil then
             return false
         end
 
         for station_id, station in pairs(stations) do
-            if not station.cart_present then
+            -- Station must have cart AND be in BOARDING state (not ARRIVED)
+            if not station.cart_present or station.state ~= "BOARDING" then
                 return false
             end
         end
@@ -1533,6 +1588,12 @@ local function runOps(config)
                     if anim.shouldFlash(anim_frame, 3) then
                         statusColor = colors.lightGray
                     end
+                elseif state == "ARRIVED" then
+                    statusIcon = anim.icons.present
+                    statusText = "ARRIVED"
+                    statusColor = colors.cyan
+                    secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader (announcements playing)
+                    showSecondaryAnim = true
                 else  -- IN_TRANSIT
                     statusIcon = anim.icons.transit
                     statusText = "IN TRANSIT"
@@ -1740,7 +1801,7 @@ local function runOps(config)
         local count = 0
         for station_id, station in pairs(stations) do
             count = count + 1
-            local status = station.cart_present and "BOARDING" or "IN_TRANSIT"
+            local status = station.state or "IN_TRANSIT"
             print(count .. ". " .. station_id .. " (" .. station.line_id .. ") - " .. status)
         end
         if count == 0 then
@@ -1753,10 +1814,10 @@ local function runOps(config)
     local function updateAllStations()
         print("")
         print("[UPDATE] Sending update command to all stations...")
-        print("[UPDATE] Pastebin ID: " .. config.pastebin_id)
+        print("[UPDATE] GitHub URL: " .. config.github_url)
         print("")
 
-        local msg = protocol.createUpdateCommand("ops_center", config.pastebin_id, "ALL")
+        local msg = protocol.createUpdateCommand("ops_center", config.github_url, "ALL")
         network.broadcast(modem, config.network_channel, msg)
 
         print("[UPDATE] Update command sent!")
