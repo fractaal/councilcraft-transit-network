@@ -997,6 +997,13 @@ local function runStation(config)
         if msg.target == "ALL" or msg.target == config.station_id then
             print("")
             print("[UPDATE] Remote update command received!")
+
+            -- Safety check for github_url
+            if not msg.github_url or msg.github_url == "" then
+                print("[UPDATE] ERROR: No GitHub URL provided in update command!")
+                return
+            end
+
             print("[UPDATE] GitHub URL: " .. msg.github_url)
             print("[UPDATE] Deleting old version...")
 
@@ -1830,6 +1837,16 @@ local function runOps(config)
     local function updateAllStations()
         print("")
         print("[UPDATE] Sending update command to all stations...")
+
+        -- Safety check for github_url
+        if not config.github_url or config.github_url == "" then
+            print("[UPDATE] ERROR: No GitHub URL configured!")
+            print("[UPDATE] This ops center is running old code.")
+            print("[UPDATE] Please manually update this ops center first using update.lua")
+            print("")
+            return
+        end
+
         print("[UPDATE] GitHub URL: " .. config.github_url)
         print("")
 
