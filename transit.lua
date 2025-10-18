@@ -598,21 +598,26 @@ function audio.getSound(sound_name)
     return nil
 end
 
--- Play a single DFPWM audio file
-function audio.playDFPWM(speaker, audio_data, volume)
-    if not speaker then return false end
-    if not audio_data then return false end
+-- DFPWM decoder (shared across all audio playback)
+audio.decoder = nil
 
-    -- Convert string to table of bytes for speaker.playAudio
-    -- CC:Tweaked's speaker.playAudio expects a table, not a string
-    local audio_table = {}
-    for i = 1, #audio_data do
-        audio_table[i] = string.byte(audio_data, i)
+-- Play a single DFPWM audio file
+function audio.playDFPWM(speaker, dfpwm_data, volume)
+    if not speaker then return false end
+    if not dfpwm_data then return false end
+
+    -- Lazy-load the DFPWM decoder
+    if not audio.decoder then
+        local dfpwm = require("cc.audio.dfpwm")
+        audio.decoder = dfpwm.make_decoder()
     end
 
-    -- Try to play DFPWM audio
+    -- Decode DFPWM to PCM (this returns a table of signed 8-bit samples)
+    local pcm_audio = audio.decoder(dfpwm_data)
+
+    -- Try to play PCM audio
     local success, err = pcall(function()
-        speaker.playAudio(audio_table, volume or 1.0)
+        speaker.playAudio(pcm_audio, volume or 1.0)
     end)
 
     if not success then
