@@ -33,6 +33,17 @@ local function update()
     print("")
 
     local config = loadConfig()
+
+    -- Safety check for github_url
+    if not config.github_url or config.github_url == "" then
+        print("WARNING: No GitHub URL in config, using default...")
+        config.github_url = DEFAULT_GITHUB_URL
+        -- Save fixed config
+        local file = fs.open(CONFIG_FILE, "w")
+        file.write(textutils.serialize(config))
+        file.close()
+    end
+
     print("GitHub URL: " .. config.github_url)
     print("Target: " .. TARGET_FILE)
     print("")
