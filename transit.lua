@@ -439,6 +439,23 @@ audio.library = {
 }
 
 -- ============================================================================
+-- STATION ID MAPPING
+-- ============================================================================
+-- Map friendly station IDs (as configured) to sequence keys
+-- Add your stations here with their friendly names as keys
+
+audio.station_map = {
+    -- Friendly Station Name → Sequence Key
+    ["Cloud District"] = "CLOUD_DISTRICT",
+    ["Dragonsreach"] = "DRAGONSREACH",
+    ["Plains District"] = "PLAINS_DISTRICT",
+    ["Ricardo's"] = "RICARDOS",
+
+    -- Add more stations here as you expand:
+    -- ["Station Name"] = "SEQUENCE_KEY",
+}
+
+-- ============================================================================
 -- AUDIO SEQUENCES (Per-Station Configuration)
 -- ============================================================================
 -- Define multi-sound sequences for each station
@@ -601,12 +618,18 @@ function audio.playSequence(speaker, sequence_name, station_id)
     -- Determine which sequence to use
     local sequence = nil
     if sequence_name == "arrival" then
-        -- Try station-specific sequence first
-        local station_key = station_id and station_id:upper():gsub("^STATION_", "")
-        if station_key and audio.sequences[station_key] then
-            sequence = audio.sequences[station_key]
+        -- Look up station in mapping table
+        local sequence_key = nil
+        if station_id and audio.station_map[station_id] then
+            -- Exact match in mapping table (e.g., "Cloud District" → "CLOUD_DISTRICT")
+            sequence_key = audio.station_map[station_id]
+        end
+
+        -- Get the sequence
+        if sequence_key and audio.sequences[sequence_key] then
+            sequence = audio.sequences[sequence_key]
         else
-            -- Fallback to generic
+            -- Fallback to generic if not found
             sequence = audio.sequences._FALLBACK
         end
     elseif sequence_name == "departure" then

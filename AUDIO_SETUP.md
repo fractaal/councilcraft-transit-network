@@ -103,13 +103,24 @@ audio.sequences = {
 
 ### How Station Matching Works
 
-The system automatically matches station IDs to sequences:
+The system uses a mapping table (`audio.station_map`) to match friendly station names to sequences:
 
-- Station ID: `station_cloud_district` → Sequence: `CLOUD_DISTRICT`
-- Station ID: `station_dragonsreach` → Sequence: `DRAGONSREACH`
-- Station ID: `station_unknown` → Sequence: `_FALLBACK`
+- Station ID: `"Cloud District"` → Sequence: `CLOUD_DISTRICT`
+- Station ID: `"Dragonsreach"` → Sequence: `DRAGONSREACH`
+- Station ID: `"Plains District"` → Sequence: `PLAINS_DISTRICT`
+- Station ID: `"Ricardo's"` → Sequence: `RICARDOS`
+- Station ID: `"Unknown Station"` → Sequence: `_FALLBACK` (not in map)
 
-The matching strips the `station_` prefix and converts to uppercase.
+**To add a new station**, edit `transit.lua` (lines 447-456):
+```lua
+audio.station_map = {
+    ["Cloud District"] = "CLOUD_DISTRICT",
+    ["Dragonsreach"] = "DRAGONSREACH",
+    ["Plains District"] = "PLAINS_DISTRICT",
+    ["Ricardo's"] = "RICARDOS",
+    ["Your New Station"] = "YOUR_NEW_STATION",  -- Add here!
+}
+```
 
 ## Step 5: Adding New Stations
 
@@ -120,14 +131,21 @@ To add a new station's custom announcement:
    ```bash
    ffmpeg -i sound_sources/ARRIVAL_NEW_STATION.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_NEW_STATION.dfpwm
    ```
-3. **Add to audio library** in `transit.lua`:
+3. **Add to audio library** in `transit.lua` (lines ~428):
    ```lua
    audio.library = {
        -- ... existing sounds ...
        ARRIVAL_NEW_STATION = "ARRIVAL_NEW_STATION.dfpwm",
    }
    ```
-4. **Create sequence** in `transit.lua`:
+4. **Add to station mapping** in `transit.lua` (lines ~447-456):
+   ```lua
+   audio.station_map = {
+       -- ... existing mappings ...
+       ["New Station Name"] = "NEW_STATION",  -- Friendly name → Key
+   }
+   ```
+5. **Create sequence** in `transit.lua` (lines ~464):
    ```lua
    audio.sequences = {
        -- ... existing sequences ...
@@ -138,8 +156,8 @@ To add a new station's custom announcement:
        }
    }
    ```
-5. **Commit and push to GitHub**
-6. **Run `update`** on your in-game computers
+6. **Commit and push to GitHub**
+7. **Run `update`** on your in-game computers
 
 ## Step 6: Deploy
 
