@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.3-modem-side-selection"
+local VERSION = "v0.10.5-registration-fix"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -1038,6 +1038,7 @@ local function runStation(config)
     local last_status_send = 0
     local modem = nil
     local speaker = nil  -- Auto-discovered speaker
+    local registered = false  -- Track if we've seen DISCOVER (prevents spam before registration)
 
     -- Trip timing
     local trip_history = {}  -- Array of trip durations in seconds
@@ -1194,6 +1195,8 @@ local function runStation(config)
         print("DISCOVER received from " .. msg.from)
         print("Registering with ops center...")
 
+        registered = true  -- Mark as registered so we start sending STATUS/HEARTBEAT
+
         local registerMsg = protocol.createRegister(
             config.station_id,
             config.line_id,
@@ -1291,6 +1294,7 @@ local function runStation(config)
 
     -- Handle messages
     local function handleMessage(msg)
+        print("[DEBUG] Station received message type: " .. (msg.type or "UNKNOWN"))
         if msg.type == protocol.DISCOVER then
             handleDiscover(msg)
         elseif msg.type == protocol.DISPATCH then
@@ -1299,6 +1303,8 @@ local function runStation(config)
             handleShutdown(msg)
         elseif msg.type == protocol.UPDATE_COMMAND then
             handleUpdate(msg)
+        else
+            print("[DEBUG] Ignoring message type: " .. (msg.type or "UNKNOWN"))
         end
     end
 
@@ -1576,16 +1582,23 @@ local function runStation(config)
         end
         -- BOARDING state just waits for DISPATCH command
 
-        -- Periodic status
-        if now - last_status_send > config.status_send_interval then
-            sendStatus()
-            last_status_send = now
-        end
+        -- Periodic status (only send if registered)
+        if registered then
+            if now - last_status_send > config.status_send_interval then
+                sendStatus()
+                last_status_send = now
+            end
 
-        -- Heartbeat
-        if now - last_heartbeat > config.heartbeat_interval then
-            sendHeartbeat()
-            last_heartbeat = now
+            -- Heartbeat
+            if now - last_heartbeat > config.heartbeat_interval then
+                sendHeartbeat()
+                last_heartbeat = now
+            end
+        else
+            -- Still waiting for DISCOVER - log reminder every 10 seconds
+            if now % 10 < 0.2 then
+                print("[WAITING] Not registered yet. Waiting for DISCOVER from ops center...")
+            end
         end
 
         -- Periodic state persistence (every 5 seconds)
@@ -1642,6 +1655,7 @@ local function runOps(config)
 
     -- Send discovery
     local function sendDiscovery()
+        print("[" .. os.date("%H:%M:%S") .. "] Sending DISCOVER broadcast...")
         local msg = protocol.createDiscover("ops_center")
         network.broadcast(modem, config.network_channel, msg)
         print("[" .. os.date("%H:%M:%S") .. "] DISCOVER broadcast sent")
@@ -2277,6 +2291,7 @@ local function runOps(config)
 
         -- Periodic discovery
         if now - last_discovery > config.discovery_interval then
+            print("[DEBUG] Discovery timer fired (every " .. config.discovery_interval .. "s)")
             sendDiscovery()
             last_discovery = now
         end
@@ -2356,12 +2371,23 @@ local function runOps(config)
         elseif event == "modem_message" then
             -- Network message
             os.cancelTimer(timer)
+            local modem_side = param1
+            local channel = param2
             local message = param4
+            print("[DEBUG] Ops center RX: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel))
             if type(message) == "string" then
+                print("[DEBUG] Message size: " .. #message .. "B")
                 local decoded = protocol.deserialize(message)
                 if decoded then
+                    local msg_type = decoded.type or "UNKNOWN"
+                    local msg_from = decoded.from or "?"
+                    print("[DEBUG] Ops center received: type=" .. msg_type .. " from=" .. msg_from)
                     handleMessage(decoded)
+                else
+                    print("[DEBUG] ERROR: Failed to deserialize message")
                 end
+            else
+                print("[DEBUG] ERROR: Non-string message: " .. type(message))
             end
         elseif event == "timer" and param1 == timer then
             -- Timeout, continue loop
