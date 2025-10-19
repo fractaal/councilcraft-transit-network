@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.1-wide-columns-and-shutdown-fix"
+local VERSION = "v0.10.3-modem-side-selection"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -115,19 +115,65 @@ end
 
 local network = {}
 
-function network.openModem(channel)
-    local modem = peripheral.find("modem")
+function network.openModem(channel, preferred_side)
+    print("[MODEM] [" .. VERSION .. "] Searching for modem peripheral...")
+
+    local modem
+    if preferred_side then
+        print("[MODEM] Attempting to use modem on side: " .. preferred_side)
+        modem = peripheral.wrap(preferred_side)
+        if modem and peripheral.getType(preferred_side) == "modem" then
+            print("[MODEM] Successfully connected to modem on side: " .. preferred_side)
+        else
+            print("[MODEM] WARNING: No modem found on side " .. preferred_side .. ", searching for any modem...")
+            modem = nil
+        end
+    end
+
+    -- Fallback to automatic discovery if no preferred side or preferred side failed
     if not modem then
+        print("[MODEM] Auto-discovering modem...")
+        modem = peripheral.find("modem")
+    end
+
+    if not modem then
+        print("[MODEM] ERROR: No modem found!")
         error("No modem found! Please attach a wired modem.")
     end
 
+    local modem_side = peripheral.getName(modem)
+    local modem_type = modem.isWireless() and "wireless" or "wired"
+    print("[MODEM] Connected to " .. modem_type .. " modem on side: " .. modem_side)
+    print("[MODEM] Opening channel " .. channel .. "...")
     modem.open(channel)
+    print("[MODEM] Channel " .. channel .. " opened successfully")
+
+    -- Log which channels are currently open
+    local open_channels = {}
+    for i = 0, 65535 do
+        if modem.isOpen(i) then
+            table.insert(open_channels, tostring(i))
+        end
+    end
+    print("[MODEM] Open channels: " .. table.concat(open_channels, ", "))
+
     return modem
 end
 
 function network.send(modem, channel, message)
     local serialized = protocol.serialize(message)
-    modem.transmit(channel, channel, serialized)
+    local msg_type = message.type or "UNKNOWN"
+    local msg_size = #serialized
+    local modem_side = peripheral.getName(modem)
+    print("[MODEM:" .. modem_side .. "] TX ch=" .. channel .. " type=" .. msg_type .. " size=" .. msg_size .. "B from=" .. (message.from or "?") .. " to=" .. (message.target or "BROADCAST"))
+
+    local success, err = pcall(function()
+        modem.transmit(channel, channel, serialized)
+    end)
+
+    if not success then
+        print("[MODEM:" .. modem_side .. "] ERROR: Failed to transmit message: " .. tostring(err))
+    end
 end
 
 function network.broadcast(modem, channel, message)
@@ -145,15 +191,82 @@ function network.receiveWithTimeout(timeout)
             return nil, nil
         elseif event == "modem_message" then
             os.cancelTimer(timer)
-            local message = param4
+            -- param1 = modem peripheral name
+            -- param2 = channel message was sent on
+            -- param3 = reply channel
+            -- param4 = message payload
+            -- param5 = distance (wireless only)
+            local modem_side = param1
             local channel = param2
+            local reply_channel = param3
+            local message = param4
+            local distance = param5
+
+            print("[MODEM] RX event: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel) .. " reply=" .. tostring(reply_channel) .. " dist=" .. tostring(distance or "N/A"))
 
             if type(message) == "string" then
+                print("[MODEM] RX payload type=string size=" .. #message .. "B")
                 local decoded = protocol.deserialize(message)
-                return decoded, channel
+                if decoded then
+                    local msg_type = decoded.type or "UNKNOWN"
+                    local msg_from = decoded.from or "?"
+                    local msg_target = decoded.target or "?"
+                    print("[MODEM] RX decoded: type=" .. msg_type .. " from=" .. msg_from .. " to=" .. msg_target)
+                    return decoded, channel
+                else
+                    print("[MODEM] ERROR: Failed to deserialize message")
+                end
+            else
+                print("[MODEM] ERROR: Received non-string message: " .. type(message))
             end
         end
     end
+end
+
+function network.checkHealth(modem, expected_channel)
+    -- Check if modem peripheral still exists
+    local modem_name = peripheral.getName(modem)
+    if not modem_name then
+        print("[MODEM] ERROR: Modem peripheral lost! No longer attached.")
+        return false
+    end
+
+    print("[MODEM:" .. modem_name .. "] === Health Check ===")
+    print("[MODEM:" .. modem_name .. "] Version: " .. VERSION)
+
+    -- Check if it's still a valid modem
+    local modem_type = "unknown"
+    if modem.isWireless then
+        modem_type = modem.isWireless() and "wireless" or "wired"
+    end
+    print("[MODEM:" .. modem_name .. "] Type: " .. modem_type)
+
+    -- Check which channels are open
+    local open_channels = {}
+    for i = 0, 65535 do
+        if modem.isOpen(i) then
+            table.insert(open_channels, tostring(i))
+        end
+    end
+    print("[MODEM:" .. modem_name .. "] Open channels: " .. (#open_channels > 0 and table.concat(open_channels, ", ") or "NONE"))
+
+    -- Check if expected channel is open
+    if expected_channel and not modem.isOpen(expected_channel) then
+        print("[MODEM:" .. modem_name .. "] WARNING: Expected channel " .. expected_channel .. " is NOT open!")
+        print("[MODEM:" .. modem_name .. "] Attempting to reopen channel " .. expected_channel .. "...")
+        modem.open(expected_channel)
+        if modem.isOpen(expected_channel) then
+            print("[MODEM:" .. modem_name .. "] Successfully reopened channel " .. expected_channel)
+        else
+            print("[MODEM:" .. modem_name .. "] ERROR: Failed to reopen channel " .. expected_channel)
+            return false
+        end
+    elseif expected_channel then
+        print("[MODEM:" .. modem_name .. "] Expected channel " .. expected_channel .. " is open: OK")
+    end
+
+    print("[MODEM:" .. modem_name .. "] Health check: PASSED")
+    return true
 end
 
 -- ============================================================================
@@ -404,6 +517,17 @@ local function configureStation()
     local powered_rail_side = read()
 
     print("")
+    print("Network Modem Configuration")
+    print("---------------------------")
+    print("If you have multiple modems, specify which side the NETWORK modem is on.")
+    print("Sides: top, bottom, left, right, front, back")
+    write("Network modem side (or press Enter to auto-detect): ")
+    local modem_side = read()
+    if modem_side == "" then
+        modem_side = nil
+    end
+
+    print("")
     write("Has monitors? (y/n): ")
     local has_display = read()
     has_display = (has_display == "y" or has_display == "Y")
@@ -415,14 +539,29 @@ local function configureStation()
         line_id = line_id,
         detector_side = detector_side,
         powered_rail_side = powered_rail_side,
+        modem_side = modem_side,
         has_display = has_display
     }
 end
 
 local function configureOps()
+    print("Operations Center Configuration")
+    print("================================")
+    print("")
+    print("Network Modem Configuration")
+    print("---------------------------")
+    print("If you have multiple modems, specify which side the NETWORK modem is on.")
+    print("Sides: top, bottom, left, right, front, back")
+    write("Network modem side (or press Enter to auto-detect): ")
+    local modem_side = read()
+    if modem_side == "" then
+        modem_side = nil
+    end
+
     -- Return ONLY per-station settings (script-authoritative settings come from script)
     return {
-        type = "ops"
+        type = "ops",
+        modem_side = modem_side
     }
 end
 
@@ -936,7 +1075,7 @@ local function runStation(config)
     print("")
     print("Opening modem...")
 
-    modem = network.openModem(config.network_channel)
+    modem = network.openModem(config.network_channel, config.modem_side)
     print("Modem opened on channel " .. config.network_channel)
 
     -- Auto-discover speaker
@@ -1359,6 +1498,7 @@ local function runStation(config)
     -- Main loop
     local last_display_update = 0
     local last_state_save = 0
+    local last_modem_check = 0
     while true do
         local now = os.epoch("utc") / 1000
 
@@ -1454,6 +1594,12 @@ local function runStation(config)
             last_state_save = now
         end
 
+        -- Periodic modem health check (every 30 seconds)
+        if now - last_modem_check > 30 then
+            network.checkHealth(modem, config.network_channel)
+            last_modem_check = now
+        end
+
         -- Update display
         if now - last_display_update > config.display_update_interval then
             displayStationStatus()
@@ -1488,7 +1634,7 @@ local function runOps(config)
     print("========================")
     print("")
 
-    modem = network.openModem(config.network_channel)
+    modem = network.openModem(config.network_channel, config.modem_side)
     print("Modem opened on channel " .. config.network_channel)
     print("")
     print("Starting discovery...")
@@ -1813,10 +1959,19 @@ local function runOps(config)
 
                 -- Version display (fallback to "---" for old stations)
                 local version_str = station.version or "---"
+                
+                -- Abridge version string to just numeric portion (e.g., "v0.10.1" from "v0.10.1-description")
+                local abridged_version = version_str
+                if version_str ~= "---" then
+                    local dash_pos = version_str:find("-")
+                    if dash_pos then
+                        abridged_version = version_str:sub(1, dash_pos - 1)
+                    end
+                end
 
                 -- Calculate available space for station name
                 -- Layout: [ICON] [HB] [VERSION] NAME          STATUS ANIM
-                local version_display = "[" .. version_str .. "]"
+                local version_display = "[" .. abridged_version .. "]"
                 local left_side_width = 4 + 5 + #version_display + 1  -- icon (4) + heartbeat (5) + version + space
                 local statusX = math.min(w - 18, 40)  -- Increased from 28 to 52 for wider station name column
                 local available_width = statusX - left_side_width - 2  -- -2 for spacing
@@ -2115,6 +2270,7 @@ local function runOps(config)
     -- Main loop
     local last_dispatch_check = 0
     local dispatched = false
+    local last_modem_check = 0
 
     while true do
         local now = os.epoch("utc") / 1000
@@ -2144,6 +2300,12 @@ local function runOps(config)
 
         -- Process shutdown request
         processShutdown()
+
+        -- Periodic modem health check (every 30 seconds)
+        if now - last_modem_check > 30 then
+            network.checkHealth(modem, config.network_channel)
+            last_modem_check = now
+        end
 
         -- Display status and update animation frame
         local display_interval_ticks = math.floor(config.display_update_interval)
