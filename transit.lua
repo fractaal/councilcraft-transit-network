@@ -1,6 +1,12 @@
 -- transit.lua
--- CouncilCraft Transit Network v0.9
+-- CouncilCraft Transit Network
 -- Real-time trip monitoring with live delay detection!
+
+-- ============================================================================
+-- VERSION
+-- ============================================================================
+
+local VERSION = "v0.10-maintenance"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -44,7 +50,7 @@ function protocol.createRegister(station_id, line_id, has_display)
     }
 end
 
-function protocol.createStatus(station_id, cart_present, trip_status, avg_trip_time, state)
+function protocol.createStatus(station_id, cart_present, trip_status, avg_trip_time, state, version)
     return {
         type = protocol.STATUS,
         from = station_id,
@@ -52,7 +58,8 @@ function protocol.createStatus(station_id, cart_present, trip_status, avg_trip_t
         cart_present = cart_present,
         trip_status = trip_status or "N/A",
         avg_trip_time = avg_trip_time,
-        state = state or "IN_TRANSIT",  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING
+        state = state or "IN_TRANSIT",  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING, SHUTDOWN
+        version = version or "unknown",
         timestamp = os.epoch("utc")
     }
 end
@@ -921,7 +928,7 @@ local function runStation(config)
     term.clear()
     term.setCursorPos(1, 1)
     print("CouncilCraft Transit Network")
-    print("Station Controller v0.9")
+    print("Station Controller " .. VERSION)
     print("========================")
     print("")
     print("Station ID: " .. config.station_id)
@@ -1020,7 +1027,7 @@ local function runStation(config)
         -- Use real-time status if in transit, otherwise use last recorded
         local status_to_send = (state == "IN_TRANSIT" and current_status ~= "N/A") and current_status or trip_status
 
-        local msg = protocol.createStatus(config.station_id, cart_present, status_to_send, avg, state)
+        local msg = protocol.createStatus(config.station_id, cart_present, status_to_send, avg, state, VERSION)
         -- Add current trip duration for real-time display
         msg.current_trip_duration = current_duration
 
@@ -1338,6 +1345,11 @@ local function runStation(config)
         mon.setTextColor(colors.gray)
         mon.write(os.date("%H:%M:%S"))
 
+        -- Version indicator
+        mon.setCursorPos(math.floor(w / 2) - math.floor(#VERSION / 2), h)
+        mon.setTextColor(colors.gray)
+        mon.write(VERSION)
+
         -- Connection indicator (heartbeat)
         mon.setCursorPos(w - 8, h)
         mon.setTextColor(colors.lime)
@@ -1472,7 +1484,7 @@ local function runOps(config)
     term.clear()
     term.setCursorPos(1, 1)
     print("CouncilCraft Transit Network")
-    print("Operations Center v0.9")
+    print("Operations Center " .. VERSION)
     print("========================")
     print("")
 
@@ -1507,7 +1519,8 @@ local function runOps(config)
                 avg_trip_time = nil,
                 state = "IN_TRANSIT",
                 current_trip_duration = nil,
-                last_completed_trip_time = nil  -- Store the final trip time when cart arrives
+                last_completed_trip_time = nil,  -- Store the final trip time when cart arrives
+                version = "---"  -- Will be updated by STATUS messages
             }
         else
             -- EXISTING STATION: Update identity fields only, preserve runtime state
@@ -1560,6 +1573,11 @@ local function runOps(config)
             -- Update state
             if msg.state then
                 stations[station_id].state = msg.state
+            end
+
+            -- Update version (with fallback for old stations)
+            if msg.version then
+                stations[station_id].version = msg.version
             end
 
             if old_status ~= msg.cart_present then
@@ -1793,9 +1811,13 @@ local function runOps(config)
                     heartbeat_color = colors.red  -- Offline/unhealthy (> 10s)
                 end
 
+                -- Version display (fallback to "---" for old stations)
+                local version_str = station.version or "---"
+
                 -- Calculate available space for station name
-                -- Layout: [ICON] [HB] NAME          STATUS ANIM
-                local left_side_width = 4 + 5  -- icon (4) + heartbeat (5)
+                -- Layout: [ICON] [HB] [VERSION] NAME          STATUS ANIM
+                local version_display = "[" .. version_str .. "]"
+                local left_side_width = 4 + 5 + #version_display + 1  -- icon (4) + heartbeat (5) + version + space
                 local statusX = math.min(w - 18, 28)
                 local available_width = statusX - left_side_width - 2  -- -2 for spacing
 
@@ -1819,12 +1841,15 @@ local function runOps(config)
                     end
                 end
 
-                -- Render: [ICON] [HEARTBEAT] NAME
+                -- Render: [ICON] [HEARTBEAT] [VERSION] NAME
                 mon.setCursorPos(2, y)
                 mon.setTextColor(statusColor)
                 mon.write(statusIcon .. " ")
                 mon.setTextColor(heartbeat_color)
                 mon.write("[" .. string.format("%.0fs", heartbeat_age) .. "]")
+                mon.write(" ")
+                mon.setTextColor(colors.gray)
+                mon.write(version_display)
                 mon.write(" ")
                 mon.setTextColor(colors.white)
                 mon.write(display_name)
@@ -1985,6 +2010,11 @@ local function runOps(config)
         mon.setCursorPos(2, h)
         mon.setTextColor(colors.gray)
         mon.write(os.date("%H:%M:%S"))
+
+        -- Version indicator (centered)
+        mon.setCursorPos(math.floor(w / 2) - math.floor(#VERSION / 2), h)
+        mon.setTextColor(colors.gray)
+        mon.write(VERSION)
 
         -- Network status
         mon.setCursorPos(w - 14, h)
