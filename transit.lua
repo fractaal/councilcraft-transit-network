@@ -2125,9 +2125,9 @@ local function runOps(config)
             last_discovery = now
         end
 
-        -- Check dispatch
+        -- Check dispatch (skip if shutdown requested - shutdown takes priority!)
         if now - last_dispatch_check > config.dispatch_check_interval then
-            if checkAllCartsPresent() then
+            if not shutdown_requested and checkAllCartsPresent() then
                 if not dispatched then
                     sendDispatch()
                     dispatched = true
