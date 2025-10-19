@@ -15,6 +15,7 @@ protocol.DISPATCH = "DISPATCH"
 protocol.HEARTBEAT = "HEARTBEAT"
 protocol.COUNTDOWN = "COUNTDOWN"
 protocol.UPDATE_COMMAND = "UPDATE_COMMAND"
+protocol.SHUTDOWN = "SHUTDOWN"
 
 function protocol.serialize(msg)
     return textutils.serialize(msg)
@@ -87,6 +88,15 @@ function protocol.createUpdateCommand(from, github_url, target)
         type = protocol.UPDATE_COMMAND,
         from = from,
         github_url = github_url,
+        target = target or "ALL",
+        timestamp = os.epoch("utc")
+    }
+end
+
+function protocol.createShutdown(from, target)
+    return {
+        type = protocol.SHUTDOWN,
+        from = from,
         target = target or "ALL",
         timestamp = os.epoch("utc")
     }
@@ -344,6 +354,30 @@ local function loadConfig()
     return nil
 end
 
+-- ============================================================================
+-- STATE PERSISTENCE (for surviving server reboots)
+-- ============================================================================
+
+local STATE_FILE = "/.transit_state"
+
+-- Save station runtime state to disk
+local function saveState(state_data)
+    local file = fs.open(STATE_FILE, "w")
+    file.write(textutils.serialize(state_data))
+    file.close()
+end
+
+-- Load station runtime state from disk
+local function loadState()
+    if fs.exists(STATE_FILE) then
+        local file = fs.open(STATE_FILE, "r")
+        local content = file.readAll()
+        file.close()
+        return textutils.unserialize(content)
+    end
+    return nil
+end
+
 local function configureStation()
     print("Station Configuration")
     print("=====================")
@@ -472,7 +506,11 @@ audio.library = {
     OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
 
     -- Departure sounds
-    DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm"
+    DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm",
+
+    -- System announcements
+    MAINTENANCE = "MAINTENANCE.dfpwm",
+    DELAYED = "DELAYED.dfpwm"
 }
 
 -- ============================================================================
@@ -547,6 +585,11 @@ audio.sequences = {
     -- Departure sequence (same for all stations)
     _DEPARTURE = {
         "DEPARTURE_CART_DEPARTING"
+    },
+
+    -- Maintenance announcement (shutdown mode)
+    _MAINTENANCE = {
+        "MAINTENANCE"
     }
 }
 
@@ -730,6 +773,8 @@ function audio.playSequence(speaker, sequence_name, station_id)
         end
     elseif sequence_name == "departure" then
         sequence = audio.sequences._DEPARTURE
+    elseif sequence_name == "maintenance" then
+        sequence = audio.sequences._MAINTENANCE
     else
         return false
     end
@@ -837,8 +882,11 @@ end
 -- ============================================================================
 
 local function runStation(config)
+    -- Load persisted state if exists (for surviving reboots)
+    local saved_state = loadState()
+
     -- State
-    local state = "IN_TRANSIT"  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING
+    local state = "IN_TRANSIT"  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING, SHUTDOWN
     local cart_present = false
     local last_heartbeat = 0
     local last_status_send = 0
@@ -853,6 +901,21 @@ local function runStation(config)
     -- Departing state timer
     local departing_start_time = nil
     local departure_sound_played = false  -- Track if departure sound has been played
+
+    -- Restore saved state if available
+    if saved_state then
+        state = saved_state.state or "IN_TRANSIT"
+        cart_present = saved_state.cart_present or false
+        trip_history = saved_state.trip_history or {}
+        trip_start_time = saved_state.trip_start_time
+
+        -- Reset transient states (ARRIVED, DEPARTING) to BOARDING on cold boot
+        if state == "ARRIVED" or state == "DEPARTING" then
+            state = "BOARDING"
+        end
+
+        print("Restored state: " .. state)
+    end
 
     -- Setup
     term.clear()
@@ -964,6 +1027,16 @@ local function runStation(config)
         network.send(modem, config.network_channel, msg)
     end
 
+    -- Save current state to disk (for surviving reboots)
+    local function persistState()
+        saveState({
+            state = state,
+            cart_present = cart_present,
+            trip_history = trip_history,
+            trip_start_time = trip_start_time
+        })
+    end
+
     -- Send heartbeat
     local function sendHeartbeat()
         local msg = protocol.createHeartbeat(config.station_id)
@@ -989,9 +1062,29 @@ local function runStation(config)
     local function handleDispatch(msg)
         if msg.target == "ALL" or msg.target == config.station_id then
             print("DISPATCH received!")
+
+            -- Allow DISPATCH to exit SHUTDOWN mode
+            if state == "SHUTDOWN" then
+                print("Exiting maintenance mode...")
+            end
+
             state = "DEPARTING"
             departing_start_time = os.epoch("utc") / 1000
+            persistState()  -- Save state change immediately
             sendStatus()
+        end
+    end
+
+    -- Handle shutdown (maintenance mode)
+    local function handleShutdown(msg)
+        if msg.target == "ALL" or msg.target == config.station_id then
+            print("SHUTDOWN received! Entering maintenance mode...")
+            state = "SHUTDOWN"
+            persistState()  -- Save state immediately (critical for reboots!)
+            sendStatus()
+
+            -- Play maintenance announcement
+            audio.playSequence(speaker, "maintenance", config.station_id)
         end
     end
 
@@ -1056,6 +1149,8 @@ local function runStation(config)
             handleDiscover(msg)
         elseif msg.type == protocol.DISPATCH then
             handleDispatch(msg)
+        elseif msg.type == protocol.SHUTDOWN then
+            handleShutdown(msg)
         elseif msg.type == protocol.UPDATE_COMMAND then
             handleUpdate(msg)
         end
@@ -1093,7 +1188,15 @@ local function runStation(config)
         local shouldAnimate = false
         local secondaryAnim = ""
 
-        if state == "DEPARTING" then
+        if state == "SHUTDOWN" then
+            statusIcon = "[XX]"
+            statusText = "MAINTENANCE"
+            statusColor = colors.red
+            -- Flash for visibility
+            if anim.shouldFlash(anim_frame, 2) then
+                statusColor = colors.orange
+            end
+        elseif state == "DEPARTING" then
             statusIcon = anim.icons.departing
             statusText = "DEPARTING"
             statusColor = colors.orange
@@ -1133,6 +1236,25 @@ local function runStation(config)
         -- Animated secondary indicator
         if shouldAnimate or state == "DEPARTING" then
             display.centerText(mon, 11, secondaryAnim, statusColor, colors.black)
+        end
+
+        -- Maintenance message (only shown in SHUTDOWN state)
+        if state == "SHUTDOWN" then
+            mon.setCursorPos(2, 13)
+            mon.setTextColor(colors.red)
+            mon.write("MRT UNDER MAINTENANCE")
+
+            mon.setCursorPos(2, 15)
+            mon.setTextColor(colors.gray)
+            mon.write("The Ministry of Science")
+            mon.setCursorPos(2, 16)
+            mon.write("and Technology apologizes")
+            mon.setCursorPos(2, 17)
+            mon.write("for the inconvenience and")
+            mon.setCursorPos(2, 18)
+            mon.write("thanks you for your")
+            mon.setCursorPos(2, 19)
+            mon.write("continued patronage.")
         end
 
         -- Trip timing status with real-time monitoring
@@ -1224,6 +1346,7 @@ local function runStation(config)
 
     -- Main loop
     local last_display_update = 0
+    local last_state_save = 0
     while true do
         local now = os.epoch("utc") / 1000
 
@@ -1293,6 +1416,11 @@ local function runStation(config)
                 departure_sound_played = false  -- Reset for next departure
                 sendStatus()
             end
+
+        elseif state == "SHUTDOWN" then
+            -- Station is in maintenance mode - cart parked indefinitely
+            -- Just wait for DISPATCH command to exit (handled in handleDispatch)
+            -- No actions needed here, station is fully parked
         end
         -- BOARDING state just waits for DISPATCH command
 
@@ -1306,6 +1434,12 @@ local function runStation(config)
         if now - last_heartbeat > config.heartbeat_interval then
             sendHeartbeat()
             last_heartbeat = now
+        end
+
+        -- Periodic state persistence (every 5 seconds)
+        if now - last_state_save > 5 then
+            persistState()
+            last_state_save = now
         end
 
         -- Update display
@@ -1332,6 +1466,7 @@ local function runOps(config)
     local stations = {}
     local modem = nil
     local last_discovery = 0
+    local shutdown_requested = false  -- Track maintenance mode request
 
     -- Setup
     term.clear()
@@ -1522,8 +1657,33 @@ local function runOps(config)
         end
     end
 
+    -- Request shutdown (wait for all carts to be ready before sending SHUTDOWN)
+    local function sendShutdown()
+        print("")
+        print("[" .. os.date("%H:%M:%S") .. "] ===== SHUTDOWN REQUESTED =====")
+        print("[" .. os.date("%H:%M:%S") .. "] Waiting for all carts to board...")
+        shutdown_requested = true
+    end
+
+    -- Process shutdown request (send SHUTDOWN when all carts ready)
+    local function processShutdown()
+        if shutdown_requested and checkAllCartsPresent() then
+            print("[" .. os.date("%H:%M:%S") .. "] All carts ready - SHUTTING DOWN")
+            print("")
+            local msg = protocol.createShutdown("ops_center", "ALL")
+            network.broadcast(modem, config.network_channel, msg)
+            shutdown_requested = false
+        end
+    end
+
     -- Display status on monitor
     local mon = display.getOutput()
+
+    -- Set text scale for more screen space (ops center only)
+    if mon.setTextScale then
+        mon.setTextScale(0.5)
+    end
+
     local anim_frame = 0
 
     local function displayStatus()
@@ -1586,7 +1746,15 @@ local function runOps(config)
 
                 local state = station.state or "IN_TRANSIT"
 
-                if state == "DEPARTING" then
+                if state == "SHUTDOWN" then
+                    statusIcon = "[XX]"
+                    statusText = "MAINTENANCE"
+                    statusColor = colors.red
+                    -- Flash for visibility
+                    if anim.shouldFlash(anim_frame, 2) then
+                        statusColor = colors.orange
+                    end
+                elseif state == "DEPARTING" then
                     statusIcon = anim.icons.departing
                     statusText = "DEPARTING"
                     statusColor = colors.orange
@@ -1750,10 +1918,32 @@ local function runOps(config)
         local statusColor
         local statusIcon
 
+        -- Count stations in SHUTDOWN
+        local shutdown_count = 0
+        for station_id, station in pairs(stations) do
+            if station.state == "SHUTDOWN" then
+                shutdown_count = shutdown_count + 1
+            end
+        end
+
         if station_count == 0 then
             statusMsg = "NO STATIONS REGISTERED"
             statusColor = colors.red
             statusIcon = "[!]"
+        elseif shutdown_count == station_count and station_count > 0 then
+            -- ALL stations in maintenance mode
+            statusMsg = "MAINTENANCE MODE - Press [d] to restart"
+            statusColor = colors.red
+            statusIcon = "[XX]"
+            -- Flash for attention
+            if anim.shouldFlash(anim_frame, 2) then
+                statusColor = colors.orange
+            end
+        elseif shutdown_requested then
+            -- Waiting for shutdown conditions
+            statusMsg = "SHUTDOWN REQUESTED - Waiting for carts..."
+            statusColor = colors.orange
+            statusIcon = anim.getSpinner(anim_frame, 2, 3)  -- Fixed width of 3 chars
         elseif carts_present == station_count and station_count > 0 then
             statusMsg = "DISPATCHING"
             statusColor = colors.lime
@@ -1814,6 +2004,7 @@ local function runOps(config)
         print("")
         print("=== MANAGEMENT COMMANDS ===")
         print("d - Force dispatch all stations")
+        print("m - Enter maintenance mode (shutdown)")
         print("r - Reset all station states to IN_TRANSIT")
         print("s - Show station list")
         print("u - Update all stations from pastebin")
@@ -1921,6 +2112,9 @@ local function runOps(config)
         -- Process non-blocking dispatch delay
         processDispatchDelay()
 
+        -- Process shutdown request
+        processShutdown()
+
         -- Display status and update animation frame
         local display_interval_ticks = math.floor(config.display_update_interval)
         if display_interval_ticks < 1 then display_interval_ticks = 1 end
@@ -1938,6 +2132,26 @@ local function runOps(config)
             os.cancelTimer(timer)
             if param1 == "d" then
                 forceDispatch()
+            elseif param1 == "m" then
+                -- Check if already shutdown
+                local all_shutdown = true
+                local count = 0
+                for station_id, station in pairs(stations) do
+                    count = count + 1
+                    if station.state ~= "SHUTDOWN" then
+                        all_shutdown = false
+                        break
+                    end
+                end
+
+                if count > 0 and all_shutdown then
+                    print("")
+                    print("System already in maintenance mode!")
+                    print("Press [d] to restart operations.")
+                    print("")
+                else
+                    sendShutdown()
+                end
             elseif param1 == "r" then
                 resetAllStations()
             elseif param1 == "s" then
