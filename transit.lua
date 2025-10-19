@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.1-wide-columns"
+local VERSION = "v0.10.1-wide-columns-and-shutdown-fix"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -1818,7 +1818,7 @@ local function runOps(config)
                 -- Layout: [ICON] [HB] [VERSION] NAME          STATUS ANIM
                 local version_display = "[" .. version_str .. "]"
                 local left_side_width = 4 + 5 + #version_display + 1  -- icon (4) + heartbeat (5) + version + space
-                local statusX = math.min(w - 18, 52)  -- Increased from 28 to 52 for wider station name column
+                local statusX = math.min(w - 18, 40)  -- Increased from 28 to 52 for wider station name column
                 local available_width = statusX - left_side_width - 2  -- -2 for spacing
 
                 -- Station name with marquee scrolling if too long
