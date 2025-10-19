@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.5-registration-fix"
+local VERSION = "v0.10.6-ops-display-interval"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -1863,6 +1863,7 @@ local function runOps(config)
     end
 
     local anim_frame = 0
+    local last_display_update = 0
 
     local function displayStatus()
         display.clear(mon, colors.black)
@@ -2322,12 +2323,14 @@ local function runOps(config)
             last_modem_check = now
         end
 
-        -- Display status and update animation frame
-        local display_interval_ticks = math.floor(config.display_update_interval)
-        if display_interval_ticks < 1 then display_interval_ticks = 1 end
-        if math.floor(now) % display_interval_ticks == 0 then
+        -- Display status and update animation frame (honor configured interval)
+        if last_display_update == 0 then
+            last_display_update = now
+        end
+        if now - last_display_update >= config.display_update_interval then
             displayStatus()
             anim_frame = anim_frame + 1
+            last_display_update = now
         end
 
         -- Check for events (messages OR keyboard)
