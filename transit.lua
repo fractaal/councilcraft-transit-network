@@ -1699,7 +1699,7 @@ local function runOps(config)
 
     -- Set text scale for more screen space (ops center only)
     if mon.setTextScale then
-        mon.setTextScale(0.5)
+        mon.setTextScale(1.0)
     end
 
     local anim_frame = 0
