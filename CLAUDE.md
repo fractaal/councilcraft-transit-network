@@ -26,8 +26,14 @@ CouncilCraft Transit Network is a **ComputerCraft: Tweaked** automated transit s
 
 ### State Machine (Stations)
 ```
-IN_TRANSIT → (cart arrives) → BOARDING → (DISPATCH received) → DEPARTING → (cart leaves) → IN_TRANSIT
+IN_TRANSIT → (cart arrives) → ARRIVED → (announcements complete) → BOARDING → (DISPATCH received) → DEPARTING → (cart leaves) → IN_TRANSIT
 ```
+
+**State Descriptions:**
+- **IN_TRANSIT**: No cart present, waiting for arrival
+- **ARRIVED**: Cart has arrived, playing audio announcements. Station is BLOCKING during audio playback and cannot respond to DISPATCH signals. Ops center sees the cart but doesn't start dispatch countdown yet.
+- **BOARDING**: Announcements complete, station is ready to board passengers and accept DISPATCH signal. Ops center starts dispatch countdown only when ALL stations reach this state.
+- **DEPARTING**: DISPATCH received, cart is departing
 
 ### Network Protocol
 - **Channel**: 100 (default, configurable)
@@ -281,3 +287,6 @@ Since this runs IN Minecraft:
 - **v0.9**: Real-time trip monitoring with live delay detection
 - **v0.6**: Animation system with spinners, flashing, progress bars
 - **v0.1**: Initial release (basic station coordination)
+
+## UPDATE VERSION ALWAYS PER CHANGE
+Remember to UPDATE THE VERSION STRING ALWAYS upon each commit with a meaningful identifier.
