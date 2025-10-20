@@ -35,7 +35,7 @@
   Converting: ARRIVAL_DRAGONSREACH.wav -> ARRIVAL_DRAGONSREACH.dfpwm ... ✓ (18K)
   Converting: ARRIVAL_GENERIC.wav -> ARRIVAL_GENERIC.dfpwm ... ✓ (6K)
   Converting: ARRIVAL_PLAINS_DISTRICT.wav -> ARRIVAL_PLAINS_DISTRICT.dfpwm ... ✓ (19K)
-  Converting: ARRIVAL_RICARDOS.wav -> ARRIVAL_RICARDOS.dfpwm ... ✓ (19K)
+  Converting: ARRIVAL_CITY_HALL.wav -> ARRIVAL_CITY_HALL.dfpwm ... ✓ (19K)
   Converting: DEPARTURE_CART_DEPARTING.mp3 -> DEPARTURE_CART_DEPARTING.dfpwm ... ✓ (5K)
   Converting: SG_MRT_BELL.wav -> SG_MRT_BELL.dfpwm ... ✓ (8K)
 ```
@@ -128,7 +128,7 @@ ls /sounds/
 -- ARRIVAL_DRAGONSREACH.dfpwm
 -- ARRIVAL_GENERIC.dfpwm
 -- ARRIVAL_PLAINS_DISTRICT.dfpwm
--- ARRIVAL_RICARDOS.dfpwm
+-- ARRIVAL_CITY_HALL.dfpwm
 -- DEPARTURE_CART_DEPARTING.dfpwm
 -- SG_MRT_BELL.dfpwm
 
@@ -189,7 +189,7 @@ response.close()
 | `station_cloud_district` | `CLOUD_DISTRICT` | Bell + Cloud District + Alight |
 | `station_dragonsreach` | `DRAGONSREACH` | Bell + Dragonsreach + Alight |
 | `station_plains_district` | `PLAINS_DISTRICT` | Bell + Plains District + Alight |
-| `station_ricardos` | `RICARDOS` | Bell + Ricardo's + Alight |
+| `station_city_hall` | `CITY_HALL` | Bell + City Hall + Alight |
 | `station_anything_else` | `_FALLBACK` | Bell + Generic + Alight |
 
 ### File Inventory
@@ -201,7 +201,7 @@ response.close()
 | `ARRIVAL_CLOUD_DISTRICT` | ARRIVAL_CLOUD_DISTRICT.dfpwm | Cloud District announcement |
 | `ARRIVAL_DRAGONSREACH` | ARRIVAL_DRAGONSREACH.dfpwm | Dragonsreach announcement |
 | `ARRIVAL_PLAINS_DISTRICT` | ARRIVAL_PLAINS_DISTRICT.dfpwm | Plains District announcement |
-| `ARRIVAL_RICARDOS` | ARRIVAL_RICARDOS.dfpwm | Ricardo's announcement |
+| `ARRIVAL_CITY_HALL` | ARRIVAL_CITY_HALL.dfpwm | City Hall announcement |
 | `ALIGHT_HINT` | ALIGHT_HINT.dfpwm | "Please alight here" |
 | `DEPARTURE_CART_DEPARTING` | DEPARTURE_CART_DEPARTING.dfpwm | Door closing chirp |
 

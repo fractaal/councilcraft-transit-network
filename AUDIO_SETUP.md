@@ -10,7 +10,7 @@ You have the following sound sources in `sound_sources/`:
 - `ARRIVAL_CLOUD_DISTRICT.wav` - "Arriving at Cloud District"
 - `ARRIVAL_DRAGONSREACH.wav` - "Arriving at Dragonsreach"
 - `ARRIVAL_PLAINS_DISTRICT.wav` - "Arriving at Plains District"
-- `ARRIVAL_RICARDOS.wav` - "Arriving at Ricardo's"
+- `ARRIVAL_CITY_HALL.wav` - "Arriving at City Hall"
 - `ARRIVAL_GENERIC.wav` - Generic arrival announcement
 - `DEPARTURE_CART_DEPARTING.mp3` - Door closing chirp
 
@@ -30,7 +30,7 @@ ffmpeg -i sound_sources/ALIGHT_HINT.wav -ac 1 -ar 48000 -f dfpwm sounds/ALIGHT_H
 ffmpeg -i sound_sources/ARRIVAL_CLOUD_DISTRICT.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_CLOUD_DISTRICT.dfpwm
 ffmpeg -i sound_sources/ARRIVAL_DRAGONSREACH.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_DRAGONSREACH.dfpwm
 ffmpeg -i sound_sources/ARRIVAL_PLAINS_DISTRICT.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_PLAINS_DISTRICT.dfpwm
-ffmpeg -i sound_sources/ARRIVAL_RICARDOS.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_RICARDOS.dfpwm
+ffmpeg -i sound_sources/ARRIVAL_CITY_HALL.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_CITY_HALL.dfpwm
 ffmpeg -i sound_sources/ARRIVAL_GENERIC.wav -ac 1 -ar 48000 -f dfpwm sounds/ARRIVAL_GENERIC.dfpwm
 ffmpeg -i sound_sources/DEPARTURE_CART_DEPARTING.mp3 -ac 1 -ar 48000 -f dfpwm sounds/DEPARTURE_CART_DEPARTING.dfpwm
 ```
@@ -108,7 +108,7 @@ The system uses a mapping table (`audio.station_map`) to match friendly station 
 - Station ID: `"Cloud District"` → Sequence: `CLOUD_DISTRICT`
 - Station ID: `"Dragonsreach"` → Sequence: `DRAGONSREACH`
 - Station ID: `"Plains District"` → Sequence: `PLAINS_DISTRICT`
-- Station ID: `"Ricardo's"` → Sequence: `RICARDOS`
+- Station ID: `"City Hall"` → Sequence: `CITY_HALL`
 - Station ID: `"Unknown Station"` → Sequence: `_FALLBACK` (not in map)
 
 **To add a new station**, edit `transit.lua` (lines 447-456):
@@ -117,7 +117,7 @@ audio.station_map = {
     ["Cloud District"] = "CLOUD_DISTRICT",
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
-    ["Ricardo's"] = "RICARDOS",
+    ["City Hall"] = "CITY_HALL",
     ["Your New Station"] = "YOUR_NEW_STATION",  -- Add here!
 }
 ```

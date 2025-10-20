@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.10-ui-abbrevs-updatecheck"
+local VERSION = "v0.10.11-city-hall-rename"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -688,7 +688,7 @@ audio.library = {
     ARRIVAL_CLOUD_DISTRICT_V2 = "ARRIVAL_CLOUD_DISTRICT_V2.dfpwm",
     ARRIVAL_DRAGONSREACH_V2 = "ARRIVAL_DRAGONSREACH_V2.dfpwm",
     ARRIVAL_PLAINS_DISTRICT_V2 = "ARRIVAL_PLAINS_DISTRICT_V2.dfpwm",
-    ARRIVAL_RICARDOS_V2 = "ARRIVAL_RICARDOS_V2.dfpwm",
+    ARRIVAL_CITY_HALL = "ARRIVAL_CITY_HALL.dfpwm",
 
     -- Hints and instructions (V2 version)
     ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
@@ -719,8 +719,8 @@ audio.station_map = {
     ["Cloud District"] = "CLOUD_DISTRICT",
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
-    ["Ricardo's"] = "RICARDOS",
-    ["Ricardo's (to"] = "RICARDOS_ABRIDGED",
+    ["City Hall"] = "CITY_HALL",
+    ["City Hall (to"] = "CITY_HALL_ABRIDGED",
 
     -- Add more stations here as you expand:
     -- ["Station Name"] = "SEQUENCE_KEY",
@@ -754,12 +754,12 @@ audio.sequences = {
         "SG_MRT_BELL"
     },
 
-    RICARDOS = {
+    CITY_HALL = {
         "SG_MRT_BELL",
-        "ARRIVAL_RICARDOS_V2",
+        "ARRIVAL_CITY_HALL",
     },
 
-    RICARDOS_ABRIDGED = {
+    CITY_HALL_ABRIDGED = {
         "SG_MRT_BELL"
     },
 
