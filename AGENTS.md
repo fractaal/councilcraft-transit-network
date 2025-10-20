@@ -1,6 +1,5 @@
 # CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) and various other AI agents and tooling when working with code in this repository.
 
 ## Project Overview
 
@@ -41,7 +40,7 @@ IN_TRANSIT → (cart arrives) → ARRIVED → (announcements complete) → BOARD
 - **Status**: Stations send STATUS every 0.5s with cart presence, trip timing, state
 - **Dispatch**: Ops center sends DISPATCH when all carts present, triggers DEPARTING state
 - **Heartbeat**: Keep-alive messages every 5s
-- **Update Command** (v0.10+): Ops center sends UPDATE_COMMAND, stations auto-update from pastebin and reboot
+- **Update Command** (v0.10+): Ops center sends UPDATE_COMMAND, stations auto-update from GitHub raw and reboot
 
 ### Trip Timing System (v0.9 feature)
 - Tracks last 10 trips per station
@@ -61,6 +60,8 @@ IN_TRANSIT → (cart arrives) → ARRIVED → (announcements complete) → BOARD
    transit
    ```
 
+   NOTE: The above is a deprecated way -- you should instead just wget the raw github user content file from the internet in a CC computer.
+
 2. **First run**: Interactive setup wizard configures the computer as Station or Ops Center
 
 3. **Subsequent runs**: Loads saved config from `/.transit_config`, auto-starts
@@ -69,7 +70,7 @@ IN_TRANSIT → (cart arrives) → ARRIVED → (announcements complete) → BOARD
 - **Manual dispatch**: In ops center console, press `d`
 - **Reset stations**: In ops center console, press `r`
 - **View stations**: Press `s`
-- **Remote update**: Press `u` (updates all stations from pastebin)
+- **Remote update**: Press `u` (updates all stations from GitHub raw)
 - **Help**: Press `h`
 
 ### Updating Deployed Systems
@@ -77,15 +78,16 @@ IN_TRANSIT → (cart arrives) → ARRIVED → (announcements complete) → BOARD
 #### Remote Update (v0.10+) - RECOMMENDED
 From the ops center console, press `u` to update ALL stations at once:
 1. Ops center broadcasts UPDATE_COMMAND to all stations
-2. Each station automatically deletes old version, downloads from pastebin, and reboots
+2. Each station automatically deletes old version, downloads from GitHub, and reboots
 3. No manual intervention needed per-station
 
-The pastebin ID is configured in `SCRIPT_OPS_CONFIG.pastebin_id` (line 278).
+~~The pastebin ID is configured in `SCRIPT_OPS_CONFIG.pastebin_id` (line 278).~~
+We use GitHub now as our source of truth. You can also update a single machine with `transit -u`.
 
 #### Manual Update (per-computer)
-Use `update.lua` on individual computers (pulls from pastebin):
+Run `transit -u` on an individual computer (optionally with a custom URL):
 ```lua
-update
+transit -u
 ```
 
 ## Code Style & Conventions
@@ -118,7 +120,7 @@ update
 ## Important Context
 
 ### ⚠️ CRITICAL: API Reference
-**ALWAYS** consult the official ComputerCraft: Tweaked documentation at **https://tweaked.cc/** before using any API.
+**ALWAYS** consult the official ComputerCraft: Tweaked documentation at **https://tweaked.cc/** before using any API or writing any code, really.
 
 - **DO NOT** assume APIs exist based on intuition or other programming languages
 - **DO NOT** invent or guess method names, parameters, or return values
@@ -153,7 +155,7 @@ These are the APIs currently used in this project (all verified against https://
 The config system uses a **script-authoritative model** for easy remote updates:
 
 #### Script-Authoritative Settings (lines 247-267)
-Settings stored in `SCRIPT_STATION_CONFIG` and `SCRIPT_OPS_CONFIG` are ALWAYS loaded from the script file. These can be updated network-wide by pushing new versions via `update.lua`:
+Settings stored in `SCRIPT_STATION_CONFIG` and `SCRIPT_OPS_CONFIG` are ALWAYS loaded from the script file. These can be updated network-wide by pushing new versions (press `u` in ops) or manually via `transit -u`:
 - Timing settings: `dispatch_delay`, `departing_delay`, `heartbeat_interval`, etc.
 - Display settings: `display_update_interval`
 - Network settings: `network_channel`
@@ -165,6 +167,7 @@ Only hardware-specific settings are persisted per-computer:
 - `type`: "station" or "ops"
 - `station_id`, `line_id`: Station identity (stations only)
 - `detector_side`, `powered_rail_side`: Redstone wiring (stations only)
+- `modem_side`: Network modem side (stations only)
 - `has_display`: Monitor presence
 
 #### How It Works
@@ -175,8 +178,8 @@ Only hardware-specific settings are persisted per-computer:
 
 #### Updating Network-Wide Settings
 1. Edit `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` in `transit.lua`
-2. Upload to pastebin/update source
-3. Run `update` on all computers
+2. Push to GitHub/update source
+3. Run `transit -u` on computers or broadcast from ops with `u`
 4. Settings apply immediately on next restart (no manual reconfiguration needed)
 
 ## Known Behaviors
@@ -238,7 +241,7 @@ ffmpeg -i input.mp3 -ac 1 -ar 48000 -f dfpwm output.dfpwm
 ### Changing Script-Authoritative Settings (v0.10+)
 To change network-wide settings like timing or thresholds:
 1. Edit values in `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` (lines 247-267)
-2. Deploy via `update.lua` to all computers
+2. Deploy via `transit -u` on each computer or broadcast from ops by pressing `u`
 3. Settings apply immediately on restart (no per-station reconfiguration needed)
 
 Example: To change dispatch delay from 4s to 6s, edit line 265:
@@ -249,7 +252,7 @@ dispatch_delay = 6,  -- Was: 4
 ### Adding New Script-Authoritative Settings
 1. Add key/value to `SCRIPT_STATION_CONFIG` or `SCRIPT_OPS_CONFIG` (lines 247-267)
 2. Use via `config.your_new_key` in code
-3. Deploy network-wide via `update.lua`
+3. Deploy network-wide via the ops broadcast (`u`) or `transit -u`
 
 ### Adding New Per-Station Settings
 1. Add to `configureStation()` or `configureOps()` setup functions (lines 333-374)
@@ -268,8 +271,7 @@ dispatch_delay = 6,  -- Was: 4
 
 ## File Purpose
 
-- **transit.lua**: Main system (all code)
-- **update.lua**: Pastebin updater for deployed systems
+- **transit.lua**: Main system (all code, includes `-u/--update`)
 - **README.md**: Installation & usage guide
 - **ANIMATIONS.md**: Visual reference for animation system
 - **.claude/settings.local.json**: Claude Code settings (not part of game)
