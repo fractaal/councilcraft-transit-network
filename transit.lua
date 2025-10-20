@@ -6,7 +6,11 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.11-city-hall-rename"
+local VERSION = "v0.10.13"
+local DESCRIPTOR="quiet-modem-logs-and-trip-history-size-and-status-indicators"
+
+-- Global debug flag for modem/network logging (overridden by config at runtime)
+MODEM_DEBUG = false
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -116,14 +120,14 @@ end
 local network = {}
 
 function network.openModem(channel, preferred_side)
-    print("[MODEM] [" .. VERSION .. "] Searching for modem peripheral...")
+    if MODEM_DEBUG then print("[MODEM] [" .. VERSION .. "] Searching for modem peripheral...") end
 
     local modem
     if preferred_side then
-        print("[MODEM] Attempting to use modem on side: " .. preferred_side)
+        if MODEM_DEBUG then print("[MODEM] Attempting to use modem on side: " .. preferred_side) end
         modem = peripheral.wrap(preferred_side)
         if modem and peripheral.getType(preferred_side) == "modem" then
-            print("[MODEM] Successfully connected to modem on side: " .. preferred_side)
+            if MODEM_DEBUG then print("[MODEM] Successfully connected to modem on side: " .. preferred_side) end
         else
             print("[MODEM] WARNING: No modem found on side " .. preferred_side .. ", searching for any modem...")
             modem = nil
@@ -132,7 +136,7 @@ function network.openModem(channel, preferred_side)
 
     -- Fallback to automatic discovery if no preferred side or preferred side failed
     if not modem then
-        print("[MODEM] Auto-discovering modem...")
+        if MODEM_DEBUG then print("[MODEM] Auto-discovering modem...") end
         modem = peripheral.find("modem")
     end
 
@@ -143,10 +147,10 @@ function network.openModem(channel, preferred_side)
 
     local modem_side = peripheral.getName(modem)
     local modem_type = modem.isWireless() and "wireless" or "wired"
-    print("[MODEM] Connected to " .. modem_type .. " modem on side: " .. modem_side)
-    print("[MODEM] Opening channel " .. channel .. "...")
+    if MODEM_DEBUG then print("[MODEM] Connected to " .. modem_type .. " modem on side: " .. modem_side) end
+    if MODEM_DEBUG then print("[MODEM] Opening channel " .. channel .. "...") end
     modem.open(channel)
-    print("[MODEM] Channel " .. channel .. " opened successfully")
+    if MODEM_DEBUG then print("[MODEM] Channel " .. channel .. " opened successfully") end
 
     -- Log which channels are currently open
     local open_channels = {}
@@ -155,7 +159,7 @@ function network.openModem(channel, preferred_side)
             table.insert(open_channels, tostring(i))
         end
     end
-    print("[MODEM] Open channels: " .. table.concat(open_channels, ", "))
+    if MODEM_DEBUG then print("[MODEM] Open channels: " .. table.concat(open_channels, ", ")) end
 
     return modem
 end
@@ -165,7 +169,7 @@ function network.send(modem, channel, message)
     local msg_type = message.type or "UNKNOWN"
     local msg_size = #serialized
     local modem_side = peripheral.getName(modem)
-    print("[MODEM:" .. modem_side .. "] TX ch=" .. channel .. " type=" .. msg_type .. " size=" .. msg_size .. "B from=" .. (message.from or "?") .. " to=" .. (message.target or "BROADCAST"))
+    if MODEM_DEBUG then print("[MODEM:" .. modem_side .. "] TX ch=" .. channel .. " type=" .. msg_type .. " size=" .. msg_size .. "B from=" .. (message.from or "?") .. " to=" .. (message.target or "BROADCAST")) end
 
     local success, err = pcall(function()
         modem.transmit(channel, channel, serialized)
@@ -202,16 +206,16 @@ function network.receiveWithTimeout(timeout)
             local message = param4
             local distance = param5
 
-            print("[MODEM] RX event: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel) .. " reply=" .. tostring(reply_channel) .. " dist=" .. tostring(distance or "N/A"))
+            if MODEM_DEBUG then print("[MODEM] RX event: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel) .. " reply=" .. tostring(reply_channel) .. " dist=" .. tostring(distance or "N/A")) end
 
             if type(message) == "string" then
-                print("[MODEM] RX payload type=string size=" .. #message .. "B")
+                if MODEM_DEBUG then print("[MODEM] RX payload type=string size=" .. #message .. "B") end
                 local decoded = protocol.deserialize(message)
                 if decoded then
                     local msg_type = decoded.type or "UNKNOWN"
                     local msg_from = decoded.from or "?"
                     local msg_target = decoded.target or "?"
-                    print("[MODEM] RX decoded: type=" .. msg_type .. " from=" .. msg_from .. " to=" .. msg_target)
+                    if MODEM_DEBUG then print("[MODEM] RX decoded: type=" .. msg_type .. " from=" .. msg_from .. " to=" .. msg_target) end
                     return decoded, channel
                 else
                     print("[MODEM] ERROR: Failed to deserialize message")
@@ -231,15 +235,15 @@ function network.checkHealth(modem, expected_channel)
         return false
     end
 
-    print("[MODEM:" .. modem_name .. "] === Health Check ===")
-    print("[MODEM:" .. modem_name .. "] Version: " .. VERSION)
+    if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] === Health Check ===") end
+    if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Version: " .. VERSION) end
 
     -- Check if it's still a valid modem
     local modem_type = "unknown"
     if modem.isWireless then
         modem_type = modem.isWireless() and "wireless" or "wired"
     end
-    print("[MODEM:" .. modem_name .. "] Type: " .. modem_type)
+    if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Type: " .. modem_type) end
 
     -- Check which channels are open
     local open_channels = {}
@@ -248,24 +252,24 @@ function network.checkHealth(modem, expected_channel)
             table.insert(open_channels, tostring(i))
         end
     end
-    print("[MODEM:" .. modem_name .. "] Open channels: " .. (#open_channels > 0 and table.concat(open_channels, ", ") or "NONE"))
+    if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Open channels: " .. (#open_channels > 0 and table.concat(open_channels, ", ") or "NONE")) end
 
     -- Check if expected channel is open
     if expected_channel and not modem.isOpen(expected_channel) then
         print("[MODEM:" .. modem_name .. "] WARNING: Expected channel " .. expected_channel .. " is NOT open!")
-        print("[MODEM:" .. modem_name .. "] Attempting to reopen channel " .. expected_channel .. "...")
+        if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Attempting to reopen channel " .. expected_channel .. "...") end
         modem.open(expected_channel)
         if modem.isOpen(expected_channel) then
-            print("[MODEM:" .. modem_name .. "] Successfully reopened channel " .. expected_channel)
+            if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Successfully reopened channel " .. expected_channel) end
         else
             print("[MODEM:" .. modem_name .. "] ERROR: Failed to reopen channel " .. expected_channel)
             return false
         end
     elseif expected_channel then
-        print("[MODEM:" .. modem_name .. "] Expected channel " .. expected_channel .. " is open: OK")
+        if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Expected channel " .. expected_channel .. " is open: OK") end
     end
 
-    print("[MODEM:" .. modem_name .. "] Health check: PASSED")
+    if MODEM_DEBUG then print("[MODEM:" .. modem_name .. "] Health check: PASSED") end
     return true
 end
 
@@ -434,19 +438,21 @@ end
 -- ===================================================================
 local SCRIPT_STATION_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
+    modem_debug = false,           -- Verbose modem/network logging
     heartbeat_interval = 5,        -- Seconds between heartbeat messages
     status_send_interval = 0.5,    -- Seconds between status updates
     display_update_interval = 0.15, -- Seconds between display redraws (faster = smoother)
     powered_rail_duration = 4,     -- Seconds to keep powered rail active
-    trip_history_size = 10,        -- Number of trips to track for timing average
+    trip_history_size = 3,        -- Number of trips to track for timing average
     on_time_tolerance = 0.10,      -- ±10% = on time
     early_threshold = -0.05,       -- >5% early = EARLY
-    delayed_threshold = 0.1,      -- >5% late = DELAYED
+    delayed_threshold = 0.10,      -- >5% late = DELAYED
     departing_delay = 3.5            -- Seconds in DEPARTING state before cart leaves
 }
 
 local SCRIPT_OPS_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
+    modem_debug = false,           -- Verbose modem/network logging
     discovery_interval = 10,        -- Seconds between discovery broadcasts
     dispatch_check_interval = 1,  -- Seconds between dispatch checks
     display_update_interval = 0.15,    -- Seconds between display redraws
@@ -715,12 +721,12 @@ audio.library = {
 
 audio.station_map = {
     -- Friendly Station Name → Sequence Key
-    ["Cloud District (to"] = "CLOUD_DISTRICT_ABRIDGED",
+    -- ["Cloud District (to"] = "CLOUD_DISTRICT_ABRIDGED",
     ["Cloud District"] = "CLOUD_DISTRICT",
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
     ["City Hall"] = "CITY_HALL",
-    ["City Hall (to"] = "CITY_HALL_ABRIDGED",
+    -- ["City Hall (to"] = "CITY_HALL_ABRIDGED",
 
     -- Add more stations here as you expand:
     -- ["Station Name"] = "SEQUENCE_KEY",
@@ -750,17 +756,10 @@ audio.sequences = {
         "ALIGHT_HINT_V3"
     },
 
-    CLOUD_DISTRICT_ABRIDGED = {
-        "SG_MRT_BELL"
-    },
-
     CITY_HALL = {
         "SG_MRT_BELL",
         "ARRIVAL_CITY_HALL",
-    },
-
-    CITY_HALL_ABRIDGED = {
-        "SG_MRT_BELL"
+        "ALIGHT_HINT_V3"
     },
 
     DRAGONSREACH = {
@@ -783,6 +782,7 @@ audio.sequences = {
 
     -- Maintenance announcement (shutdown mode)
     _MAINTENANCE = {
+        "SG_MRT_BELL",
         "MAINTENANCE"
     }
 }
@@ -1122,10 +1122,10 @@ local function runStation(config)
     print("Station ID: " .. config.station_id)
     print("Line ID: " .. config.line_id)
     print("")
-    print("Opening modem...")
+    if MODEM_DEBUG then print("Opening modem...") end
 
     modem = network.openModem(config.network_channel, config.modem_side)
-    print("Modem opened on channel " .. config.network_channel)
+    if MODEM_DEBUG then print("Modem opened on channel " .. config.network_channel) end
 
     -- Auto-discover speaker
     speaker = peripheral.find("speaker")
@@ -1308,7 +1308,7 @@ local function runStation(config)
 
     -- Handle messages
     local function handleMessage(msg)
-        print("[DEBUG] Station received message type: " .. (msg.type or "UNKNOWN"))
+            if MODEM_DEBUG then print("[DEBUG] Station received message type: " .. (msg.type or "UNKNOWN")) end
         if msg.type == protocol.DISCOVER then
             handleDiscover(msg)
         elseif msg.type == protocol.DISPATCH then
@@ -1318,7 +1318,7 @@ local function runStation(config)
         elseif msg.type == protocol.UPDATE_COMMAND then
             handleUpdate(msg)
         else
-            print("[DEBUG] Ignoring message type: " .. (msg.type or "UNKNOWN"))
+            if MODEM_DEBUG then print("[DEBUG] Ignoring message type: " .. (msg.type or "UNKNOWN")) end
         end
     end
 
@@ -1374,13 +1374,13 @@ local function runStation(config)
             end
         elseif state == "DEPARTING" then
             statusIcon = anim.icons.departing
-            statusText = "DPT"
+            statusText = "DEPARTING"
             statusColor = colors.orange
             -- Add departure countdown animation
             secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
         elseif state == "BOARDING" then
             statusIcon = anim.icons.boarding
-            statusText = "BRD"
+            statusText = "BOARDING"
             statusColor = colors.lime
             -- Gentle pulsing effect
             if anim.shouldFlash(anim_frame, 3) then
@@ -1388,14 +1388,14 @@ local function runStation(config)
             end
         elseif state == "ARRIVED" then
             statusIcon = anim.icons.present
-            statusText = "AVD"
+            statusText = "ARRIVED"
             statusColor = colors.cyan
             -- Spinner to show announcements playing
             shouldAnimate = true
             secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
         else  -- IN_TRANSIT
             statusIcon = anim.icons.transit
-            statusText = "TRT"
+            statusText = "IN TRANSIT"
             statusColor = colors.yellow
             shouldAnimate = true
             secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
@@ -1678,7 +1678,7 @@ local function runOps(config)
     print("")
 
     modem = network.openModem(config.network_channel, config.modem_side)
-    print("Modem opened on channel " .. config.network_channel)
+    if MODEM_DEBUG then print("Modem opened on channel " .. config.network_channel) end
     print("")
     print("Starting discovery...")
     print("")
@@ -2350,7 +2350,7 @@ local function runOps(config)
 
         -- Periodic discovery
         if now - last_discovery > config.discovery_interval then
-            print("[DEBUG] Discovery timer fired (every " .. config.discovery_interval .. "s)")
+            if MODEM_DEBUG then print("[DEBUG] Discovery timer fired (every " .. config.discovery_interval .. "s)") end
             sendDiscovery()
             last_discovery = now
         end
@@ -2441,20 +2441,20 @@ local function runOps(config)
             local modem_side = param1
             local channel = param2
             local message = param4
-            print("[DEBUG] Ops center RX: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel))
+            if MODEM_DEBUG then print("[DEBUG] Ops center RX: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel)) end
             if type(message) == "string" then
-                print("[DEBUG] Message size: " .. #message .. "B")
+                if MODEM_DEBUG then print("[DEBUG] Message size: " .. #message .. "B") end
                 local decoded = protocol.deserialize(message)
                 if decoded then
                     local msg_type = decoded.type or "UNKNOWN"
                     local msg_from = decoded.from or "?"
-                    print("[DEBUG] Ops center received: type=" .. msg_type .. " from=" .. msg_from)
+                    if MODEM_DEBUG then print("[DEBUG] Ops center received: type=" .. msg_type .. " from=" .. msg_from) end
                     handleMessage(decoded)
                 else
-                    print("[DEBUG] ERROR: Failed to deserialize message")
+                    if MODEM_DEBUG then print("[DEBUG] ERROR: Failed to deserialize message") end
                 end
             else
-                print("[DEBUG] ERROR: Non-string message: " .. type(message))
+                if MODEM_DEBUG then print("[DEBUG] ERROR: Non-string message: " .. type(message)) end
             end
         elseif event == "timer" and param1 == timer then
             -- Timeout, continue loop
@@ -2503,6 +2503,10 @@ do
 end
 
 local config = loadConfig()
+-- Apply runtime logging preference
+if config and config.modem_debug ~= nil then
+    MODEM_DEBUG = config.modem_debug and true or false
+end
 
 if not config then
     initialSetup()
