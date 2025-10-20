@@ -6,8 +6,8 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.13"
-local DESCRIPTOR="quiet-modem-logs-and-trip-history-size-and-status-indicators"
+local VERSION = "v0.10.14"
+local DESCRIPTOR="update-announcements-sequences"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
