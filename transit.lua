@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.6-ops-display-interval"
+local VERSION = "v0.10.8-unified-update-arg"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -380,10 +380,57 @@ end
 
 local CONFIG_FILE = "/.transit_config"
 
+-- ============================================================================
+-- UTILS: SELF-UPDATE
+-- Shared installer used by both remote update and CLI flag
+-- ============================================================================
+
+local function install_from_github(github_url)
+    if not github_url or github_url == "" then
+        print("[UPDATE] ERROR: Missing GitHub URL")
+        return false
+    end
+
+    print("[UPDATE] GitHub URL: " .. github_url)
+    print("[UPDATE] Deleting old version...")
+
+    local startup_files = {"startup/transit.lua", "startup.lua", "transit.lua"}
+    for _, file in ipairs(startup_files) do
+        if fs.exists(file) then
+            fs.delete(file)
+            print("[UPDATE] Deleted: " .. file)
+        end
+    end
+
+    if not fs.exists("startup") then
+        fs.makeDir("startup")
+    end
+
+    print("[UPDATE] Downloading from GitHub...")
+    local response = http.get(github_url)
+    if not response then
+        print("[UPDATE] ERROR: Failed to download from GitHub!")
+        print("[UPDATE] System may be broken - manual fix required")
+        return false
+    end
+
+    local content = response.readAll()
+    response.close()
+
+    local target_file = "startup/transit.lua"
+    local file = fs.open(target_file, "w")
+    file.write(content)
+    file.close()
+
+    print("[UPDATE] Download complete → " .. target_file)
+    return true
+end
+
 -- ===================================================================
 -- SCRIPT-AUTHORITATIVE CONFIG
 -- These values are ALWAYS used from the script and can be updated
--- remotely by pushing new versions of transit.lua via update.lua
+-- remotely by pushing new versions of transit.lua (press 'u' in ops),
+-- or manually using `transit -u` on each computer.
 -- ===================================================================
 local SCRIPT_STATION_CONFIG = {
     network_channel = 100,         -- Network channel for modem communication
@@ -1249,46 +1296,12 @@ local function runStation(config)
                 return
             end
 
-            print("[UPDATE] GitHub URL: " .. msg.github_url)
-            print("[UPDATE] Deleting old version...")
-
-            -- Delete all possible startup file locations
-            local startup_files = {"startup/transit.lua", "startup.lua", "transit.lua"}
-            for _, file in ipairs(startup_files) do
-                if fs.exists(file) then
-                    fs.delete(file)
-                    print("[UPDATE] Deleted: " .. file)
-                end
+            local ok = install_from_github(msg.github_url)
+            if ok then
+                print("[UPDATE] Rebooting in 2 seconds...")
+                sleep(2)
+                os.reboot()
             end
-
-            -- Create startup directory if needed
-            if not fs.exists("startup") then
-                fs.makeDir("startup")
-            end
-
-            print("[UPDATE] Downloading from GitHub...")
-            local target_file = "startup/transit.lua"
-
-            -- Download from GitHub using http.get()
-            local response = http.get(msg.github_url)
-            if not response then
-                print("[UPDATE] ERROR: Failed to download from GitHub!")
-                print("[UPDATE] System may be broken - manual fix required")
-                return
-            end
-
-            local content = response.readAll()
-            response.close()
-
-            -- Write to file
-            local file = fs.open(target_file, "w")
-            file.write(content)
-            file.close()
-
-            print("[UPDATE] Download complete!")
-            print("[UPDATE] Rebooting in 2 seconds...")
-            sleep(2)
-            os.reboot()
         end
     end
 
@@ -1316,6 +1329,14 @@ local function runStation(config)
 
         display.clear(mon, colors.black)
         local w, h = mon.getSize()
+
+        -- Minimal maintenance screen: station ID + closed message only
+        if state == "SHUTDOWN" then
+            local centerY = math.floor(h / 2)
+            display.centerText(mon, centerY - 1, tostring(config.station_id), colors.white, colors.black)
+            display.centerText(mon, centerY + 1, "MRT UNDER MAINTENANCE", colors.red, colors.black)
+            return
+        end
 
         -- Animated header with box drawing
         display.centerText(mon, 1, string.rep("-", w - 4), colors.gray, colors.black)
@@ -2207,7 +2228,7 @@ local function runOps(config)
         print("m - Enter maintenance mode (shutdown)")
         print("r - Reset all station states to IN_TRANSIT")
         print("s - Show station list")
-        print("u - Update all stations from pastebin")
+        print("u - Update all stations from GitHub")
         print("h - Show this help")
         print("===========================")
         print("")
@@ -2262,7 +2283,7 @@ local function runOps(config)
         if not config.github_url or config.github_url == "" then
             print("[UPDATE] ERROR: No GitHub URL configured!")
             print("[UPDATE] This ops center is running old code.")
-            print("[UPDATE] Please manually update this ops center first using update.lua")
+            print("[UPDATE] Please manually update this ops center first using: transit -u")
             print("")
             return
         end
@@ -2401,6 +2422,42 @@ end
 -- ============================================================================
 -- MAIN ENTRY POINT
 -- ============================================================================
+
+-- Basic CLI argument handling (ComputerCraft passes args via ...)
+do
+    local tArgs = {...}
+    if #tArgs > 0 then
+        local a1 = tArgs[1]
+        if a1 == "-h" or a1 == "--help" then
+            print("CouncilCraft Transit Network " .. VERSION)
+            print("Usage: transit [options]\n")
+            print("Options:")
+            print("  -u, --update [url]   Download latest transit.lua to startup/")
+            print("                      If url not provided, uses default in script.")
+            print("  -h, --help           Show this help message")
+            return
+        elseif a1 == "-u" or a1 == "--update" then
+            local url = tArgs[2] or (SCRIPT_OPS_CONFIG and SCRIPT_OPS_CONFIG.github_url)
+            print("CouncilCraft Transit Network Updater")
+            print("====================================")
+            print("")
+            local ok = install_from_github(url)
+            if ok then
+                print("")
+                write("Reboot now? (y/n): ")
+                local resp = read()
+                if resp == "y" or resp == "Y" then
+                    print("Rebooting...")
+                    sleep(1)
+                    os.reboot()
+                else
+                    print("Update complete. Run 'reboot' when ready.")
+                end
+            end
+            return
+        end
+    end
+end
 
 local config = loadConfig()
 
