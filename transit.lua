@@ -745,28 +745,22 @@ audio.sequences = {
 
     PLAINS_DISTRICT = {
         "SG_MRT_BELL",
-        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_PLAINS_DISTRICT_V2",
-        "ALIGHT_HINT_V3"
     },
 
     CLOUD_DISTRICT = {
         "SG_MRT_BELL",
         "ARRIVAL_CLOUD_DISTRICT_V2",
-        "ALIGHT_HINT_V3"
     },
 
     CITY_HALL = {
         "SG_MRT_BELL",
         "ARRIVAL_CITY_HALL",
-        "ALIGHT_HINT_V3"
     },
 
     DRAGONSREACH = {
         "SG_MRT_BELL",
-        "LOOPS_HERE_BEFORE_NAME",
         "ARRIVAL_DRAGONSREACH_V2",
-        "ALIGHT_HINT_V3"
     },
 
     -- Fallback sequence (used if station_id doesn't match)
@@ -783,7 +777,8 @@ audio.sequences = {
     -- Maintenance announcement (shutdown mode)
     _MAINTENANCE = {
         "SG_MRT_BELL",
-        "MAINTENANCE"
+        "MAINTENANCE",
+        "SG_MRT_BELL",
     }
 }
 
