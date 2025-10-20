@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.8-unified-update-arg"
+local VERSION = "v0.10.10-ui-abbrevs-updatecheck"
 
 -- ============================================================================
 -- SHARED: PROTOCOL
@@ -450,6 +450,7 @@ local SCRIPT_OPS_CONFIG = {
     discovery_interval = 10,        -- Seconds between discovery broadcasts
     dispatch_check_interval = 1,  -- Seconds between dispatch checks
     display_update_interval = 0.25,    -- Seconds between display redraws
+    update_check_interval = 60,    -- Seconds between remote version checks (GitHub)
     dispatch_delay = 1,            -- Seconds to wait before dispatching (ensures audio completes + boarding time)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
     github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"  -- GitHub raw URL for remote updates
@@ -1332,6 +1333,8 @@ local function runStation(config)
 
         -- Minimal maintenance screen: station ID + closed message only
         if state == "SHUTDOWN" then
+            -- Defensive clear to prevent any ghosting on early return
+            display.clear(mon, colors.black)
             local centerY = math.floor(h / 2)
             display.centerText(mon, centerY - 1, tostring(config.station_id), colors.white, colors.black)
             display.centerText(mon, centerY + 1, "MRT UNDER MAINTENANCE", colors.red, colors.black)
@@ -1363,7 +1366,7 @@ local function runStation(config)
 
         if state == "SHUTDOWN" then
             statusIcon = "[XX]"
-            statusText = "MAINTENANCE"
+            statusText = "MNT"
             statusColor = colors.red
             -- Flash for visibility
             if anim.shouldFlash(anim_frame, 2) then
@@ -1371,13 +1374,13 @@ local function runStation(config)
             end
         elseif state == "DEPARTING" then
             statusIcon = anim.icons.departing
-            statusText = "DEPARTING"
+            statusText = "DPT"
             statusColor = colors.orange
             -- Add departure countdown animation
             secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
         elseif state == "BOARDING" then
             statusIcon = anim.icons.boarding
-            statusText = "BOARDING"
+            statusText = "BRD"
             statusColor = colors.lime
             -- Gentle pulsing effect
             if anim.shouldFlash(anim_frame, 3) then
@@ -1385,14 +1388,14 @@ local function runStation(config)
             end
         elseif state == "ARRIVED" then
             statusIcon = anim.icons.present
-            statusText = "ARRIVED"
+            statusText = "AVD"
             statusColor = colors.cyan
             -- Spinner to show announcements playing
             shouldAnimate = true
             secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
         else  -- IN_TRANSIT
             statusIcon = anim.icons.transit
-            statusText = "IN TRANSIT"
+            statusText = "TRT"
             statusColor = colors.yellow
             shouldAnimate = true
             secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
@@ -1465,7 +1468,9 @@ local function runStation(config)
 
             mon.setCursorPos(2, 14)
             mon.setTextColor(displayColor)
-            mon.write(timingIcon .. " " .. displayStatus)
+            local to3 = { ["ON TIME"] = "ONT", ["EARLY"] = "EAR", ["DELAYED"] = "DLY" }
+            local display3 = to3[displayStatus] or displayStatus
+            mon.write(timingIcon .. " " .. display3)
 
             -- Show real-time trip progress
             if state == "IN_TRANSIT" and current_duration then
@@ -1516,10 +1521,11 @@ local function runStation(config)
         mon.setTextColor(colors.gray)
         mon.write(VERSION)
 
-        -- Connection indicator (heartbeat)
-        mon.setCursorPos(w - 8, h)
-        mon.setTextColor(colors.lime)
-        mon.write("[ONLINE]")
+        -- Registration indicator
+        local right_label = registered and "[REG]" or "[DISC]"
+        mon.setCursorPos(w - #right_label + 1, h)
+        mon.setTextColor(registered and colors.lime or colors.gray)
+        mon.write(right_label)
     end
 
     -- Main loop
@@ -1659,6 +1665,9 @@ local function runOps(config)
     local modem = nil
     local last_discovery = 0
     local shutdown_requested = false  -- Track maintenance mode request
+    local update_available = false
+    local remote_version = nil
+    local last_update_check = 0
 
     -- Setup
     term.clear()
@@ -1875,6 +1884,23 @@ local function runOps(config)
         end
     end
 
+    -- Check remote version from GitHub (ops only)
+    local function checkRemoteVersion()
+        if not config.github_url or config.github_url == "" then return end
+        local resp = http.get(config.github_url)
+        if resp then
+            local content = resp.readAll()
+            resp.close()
+            if content then
+                local ver = content:match("local%s+VERSION%s*=%s*\"([^\"]+)\"")
+                if ver then
+                    remote_version = ver
+                    update_available = (remote_version ~= VERSION)
+                end
+            end
+        end
+    end
+
     -- Display status on monitor
     local mon = display.getOutput()
 
@@ -1948,7 +1974,7 @@ local function runOps(config)
 
                 if state == "SHUTDOWN" then
                     statusIcon = "[XX]"
-                    statusText = "MAINTENANCE"
+                    statusText = "MNT"
                     statusColor = colors.red
                     -- Flash for visibility
                     if anim.shouldFlash(anim_frame, 2) then
@@ -1956,13 +1982,13 @@ local function runOps(config)
                     end
                 elseif state == "DEPARTING" then
                     statusIcon = anim.icons.departing
-                    statusText = "DEPARTING"
+                    statusText = "DPT"
                     statusColor = colors.orange
                     secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
                     showSecondaryAnim = true
                 elseif state == "BOARDING" then
                     statusIcon = anim.icons.boarding
-                    statusText = "BOARDING"
+                    statusText = "BRD"
                     statusColor = colors.lime
                     -- Gentle pulsing effect
                     if anim.shouldFlash(anim_frame, 3) then
@@ -1970,13 +1996,13 @@ local function runOps(config)
                     end
                 elseif state == "ARRIVED" then
                     statusIcon = anim.icons.present
-                    statusText = "ARRIVED"
+                    statusText = "AVD"
                     statusColor = colors.cyan
                     secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader (announcements playing)
                     showSecondaryAnim = true
                 else  -- IN_TRANSIT
                     statusIcon = anim.icons.transit
-                    statusText = "IN TRANSIT"
+                    statusText = "TRT"
                     statusColor = colors.yellow
                     secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
                     showSecondaryAnim = true
@@ -2066,15 +2092,15 @@ local function runOps(config)
 
                     if station.trip_status == "ON TIME" then
                         timingIcon = anim.icons.on_time
-                        timingText = "ON TIME"
+                        timingText = "ONT"
                         timingColor = colors.lime
                     elseif station.trip_status == "EARLY" then
                         timingIcon = anim.icons.early
-                        timingText = "EARLY"
+                        timingText = "EAR"
                         timingColor = colors.cyan
                     elseif station.trip_status == "DELAYED" then
                         timingIcon = anim.icons.delayed
-                        timingText = "DELAYED"
+                        timingText = "DLY"
                         timingColor = colors.red
                         shouldFlashTiming = true
                     end
@@ -2207,10 +2233,18 @@ local function runOps(config)
         mon.setTextColor(colors.gray)
         mon.write(VERSION)
 
-        -- Network status
-        mon.setCursorPos(w - 14, h)
-        mon.setTextColor(colors.lime)
-        mon.write("NETWORK ACTIVE")
+        -- Network / Update status (dynamic, right-aligned)
+        local rightText
+        if update_available then
+            local longTxt = "[!!] UPDATE AVAILABLE"
+            rightText = (#longTxt <= w and longTxt) or "[!!] UPD"
+        else
+            local netLong = "NETWORK ACTIVE"
+            rightText = (#netLong <= w and netLong) or "NET OK"
+        end
+        mon.setCursorPos(w - #rightText + 1, h)
+        mon.setTextColor(update_available and colors.orange or colors.lime)
+        mon.write(rightText)
 
         -- Management hint
         if h > 20 then  -- Only show on larger displays
@@ -2302,6 +2336,9 @@ local function runOps(config)
     -- Initial discovery
     sendDiscovery()
     showHelp()
+    -- Kick off initial update check immediately
+    checkRemoteVersion()
+    last_update_check = os.epoch("utc") / 1000
 
     -- Main loop
     local last_dispatch_check = 0
@@ -2342,6 +2379,12 @@ local function runOps(config)
         if now - last_modem_check > 30 then
             network.checkHealth(modem, config.network_channel)
             last_modem_check = now
+        end
+
+        -- Periodic update check (GitHub)
+        if now - last_update_check >= config.update_check_interval then
+            checkRemoteVersion()
+            last_update_check = now
         end
 
         -- Display status and update animation frame (honor configured interval)
