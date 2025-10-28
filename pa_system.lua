@@ -28,6 +28,10 @@ local state = {
   controller_present = false,
   controller_last_seen = 0,
   controller_api_base = nil,
+  paused = false,
+  elapsed_seconds = 0,
+  track_duration = 0,
+  playback_start_time = nil,
 }
 
 local decoder = require("cc.audio.dfpwm").make_decoder()
@@ -58,6 +62,15 @@ local command_history = {}
 local history_index = nil
 local prompt_needs_redraw = true
 
+local function format_time(seconds)
+  if not seconds or seconds < 0 then
+    return "--:--"
+  end
+  local mins = math.floor(seconds / 60)
+  local secs = math.floor(seconds % 60)
+  return string.format("%d:%02d", mins, secs)
+end
+
 local function redraw_logs()
   local prev = term.redirect(base_term)
   term_width, term_height = term.getSize()
@@ -68,7 +81,15 @@ local function redraw_logs()
   term.setCursorPos(1, 1)
   term.write(string.format("PA System v%s  [%s]", VERSION, role))
   term.setCursorPos(1, 2)
-  term.write(string.format("Group: %s  API: %s", group_id or "?", state.controller_api_base or "-"))
+
+  local line2 = string.format("Group: %s", group_id or "?")
+  if state.now_playing and audio_state.status == "streaming" and not state.paused then
+    local time_str = string.format(" [%s/%s]", format_time(state.elapsed_seconds), format_time(state.track_duration))
+    line2 = line2 .. time_str
+  elseif state.paused then
+    line2 = line2 .. " [PAUSED]"
+  end
+  term.write(line2)
   term.setCursorPos(1, 3)
   term.write(string.rep("-", term_width))
 
@@ -150,10 +171,13 @@ local function print_help()
   status - display current state
   playlist - list playlist entries
   play - start/resume playback
+  pause - pause current track
   stop - stop playback
   next - skip to next track
+  goto <index> - jump to track by index
   add <url> [title] - add track to playlist
   remove <index> - remove track from playlist
+  move <from> <to> - reorder tracks
   pa "msg" [url] - broadcast PA announcement
   reload - reload state from disk
   setapi <url> - update API base URL
@@ -480,6 +504,35 @@ local function render_monitors()
 end
 
 local marquee_timer
+local time_update_timer
+
+local function start_time_tracker()
+  if time_update_timer then
+    os.cancelTimer(time_update_timer)
+  end
+  state.playback_start_time = os.epoch("utc") / 1000
+  state.elapsed_seconds = 0
+  time_update_timer = os.startTimer(1)
+end
+
+local function stop_time_tracker()
+  if time_update_timer then
+    os.cancelTimer(time_update_timer)
+    time_update_timer = nil
+  end
+  state.elapsed_seconds = 0
+  state.playback_start_time = nil
+end
+
+local function update_elapsed_time()
+  if state.playback_start_time and not state.paused then
+    state.elapsed_seconds = (os.epoch("utc") / 1000) - state.playback_start_time
+  end
+  redraw_logs()
+  if not state.paused and audio_state.status == "streaming" then
+    time_update_timer = os.startTimer(1)
+  end
+end
 
 local function stop_audio()
   local was_active = (audio_state.status == "streaming" or audio_state.status == "waiting") and audio_state.mode ~= nil
@@ -502,6 +555,8 @@ local function stop_audio()
       pending_requests[url] = nil
     end
   end
+
+  stop_time_tracker()
 
   if was_active then
     log("INFO", "Audio playback halted")
@@ -560,6 +615,8 @@ local function start_music_stream(entry)
     title = entry.title,
     artist = entry.artist,
   }
+  state.track_duration = entry.duration or 0
+  state.paused = false
   os.queueEvent("render_ui")
 
   if entry.title then
@@ -711,6 +768,8 @@ local function uiLoop()
         else
           marquee_timer = nil
         end
+      elseif time_update_timer and timer_id == time_update_timer then
+        update_elapsed_time()
       end
     elseif name == "term_resize" then
       redraw_logs()
@@ -1015,9 +1074,70 @@ local function handle_command(line)
     end
   elseif cmd == "play" then
     if role == "controller" then
-      start_current_track()
+      if state.paused and state.now_playing then
+        state.paused = false
+        start_time_tracker()
+        log("INFO", "Playback resumed")
+        os.queueEvent("render_ui")
+      else
+        start_current_track()
+      end
     else
       log("WARN", "Only controller can start playback")
+    end
+  elseif cmd == "pause" then
+    if role == "controller" then
+      if state.now_playing and audio_state.status == "streaming" and not state.paused then
+        state.paused = true
+        stop_time_tracker()
+        log("INFO", "Playback paused")
+        os.queueEvent("render_ui")
+      else
+        log("WARN", "Nothing is playing to pause")
+      end
+    else
+      log("WARN", "Only controller can pause playback")
+    end
+  elseif cmd == "goto" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can jump to tracks")
+    elseif rest == "" then
+      log("WARN", "Usage: goto <index>")
+    else
+      local index = tonumber(rest)
+      if not index or index < 1 or index > #state.playlist then
+        log("WARN", string.format("Invalid index (must be 1-%d)", #state.playlist))
+      else
+        state.current_index = index
+        stop_music()
+        start_current_track()
+        persist_pa_state()
+        log("INFO", string.format("Jumped to track #%d", index))
+      end
+    end
+  elseif cmd == "move" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can modify playlist")
+    elseif rest == "" then
+      log("WARN", "Usage: move <from> <to>")
+    else
+      local from, to = rest:match("^(%d+)%s+(%d+)$")
+      from, to = tonumber(from), tonumber(to)
+      if not from or not to or from < 1 or from > #state.playlist or to < 1 or to > #state.playlist then
+        log("WARN", string.format("Invalid indices (must be 1-%d)", #state.playlist))
+      else
+        local track = table.remove(state.playlist, from)
+        table.insert(state.playlist, to, track)
+        if state.current_index == from then
+          state.current_index = to
+        elseif from < state.current_index and to >= state.current_index then
+          state.current_index = state.current_index - 1
+        elseif from > state.current_index and to <= state.current_index then
+          state.current_index = state.current_index + 1
+        end
+        persist_pa_state()
+        log("INFO", string.format("Moved track #%d to #%d", from, to))
+      end
     end
   elseif cmd == "pa" then
     if role ~= "controller" then
@@ -1195,10 +1315,12 @@ local function httpLoop()
             if entry then
               entry.title = data.title or entry.title
               entry.artist = data.channel or entry.artist
+              entry.duration = data.durationSeconds or entry.duration
               persist_pa_state()
               if state.now_playing and state.now_playing.url == entry.url then
                 state.now_playing.title = entry.title
                 state.now_playing.artist = entry.artist
+                state.track_duration = entry.duration or 0
                 os.queueEvent("render_ui")
               end
             end
@@ -1210,6 +1332,9 @@ local function httpLoop()
           audio_state.start = handle.read(4)
           audio_state.chunk_size = 16 * 1024 - 4
           audio_state.consecutive_failures = 0
+          if request.kind == "music" then
+            start_time_tracker()
+          end
           os.queueEvent("audio_update")
         else
           handle.close()
