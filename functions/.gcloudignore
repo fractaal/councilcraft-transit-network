@@ -1,0 +1,27 @@
+# Node modules (installed on cloud)
+node_modules/
+
+# Development files
+*.log
+.env.local
+.env.*.local
+
+# Editor directories
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Zone Identifier files (Windows WSL artifacts)
+*.Zone.Identifier
+
+# Git files
+.git/
+.gitignore
+
+# IMPORTANT: Ensure bin/ is NOT excluded
+# The ffmpeg binary in bin/ MUST be deployed
+!bin/
+!bin/ffmpeg

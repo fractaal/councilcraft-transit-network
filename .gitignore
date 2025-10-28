@@ -1,3 +1,9 @@
 
 sound_sources/
 .claude/settings.local.json
+
+*_reference.lua
+
+node_modules
+
+*Zone.Identifier
