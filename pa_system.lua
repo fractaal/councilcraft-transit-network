@@ -1226,6 +1226,11 @@ local function commandLoop()
       command_buffer = command_buffer:sub(1, cursor_pos) .. char .. command_buffer:sub(cursor_pos + 1)
       cursor_pos = cursor_pos + 1
       redraw_prompt()
+    elseif name == "paste" then
+      local text = event[2]
+      command_buffer = command_buffer:sub(1, cursor_pos) .. text .. command_buffer:sub(cursor_pos + 1)
+      cursor_pos = cursor_pos + #text
+      redraw_prompt()
     elseif name == "key" then
       local key = event[2]
       if key == keys.left then
