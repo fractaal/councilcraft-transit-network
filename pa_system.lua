@@ -43,6 +43,7 @@ local audio_state = {
   start = nil,
   chunk_size = nil,
   queue = {},
+  consecutive_failures = 0,
 }
 
 local pending_requests = {}
@@ -276,7 +277,6 @@ local function persistence_setup()
     role = config.role
     group_id = config.group_id
     network_side = config.network_modem_side
-    state.controller_api_base = config.api_base_url or DEFAULT_API_BASE
     return
   end
 
@@ -298,31 +298,19 @@ local function persistence_setup()
   print("Detected modems: " .. table.concat(modem_names, ", "))
   network_side = input("Enter modem side/name for PA signalling", modem_names[1])
 
-  local api_base = input("Enter streaming API base URL (without trailing slash)", DEFAULT_API_BASE)
-
   config = {
     role = role,
     group_id = group_id,
     network_modem_side = network_side,
-    api_base_url = api_base,
   }
 
   if role == "controller" then
     config.has_local_audio = input("Does this controller have local speakers? (y/N)", "N"):lower() == "y"
+    local api_base = input("Enter streaming API base URL (without trailing slash)", DEFAULT_API_BASE)
+    state.controller_api_base = api_base
   end
 
   persist_config()
-
-  if role == "controller" then
-    state.controller_api_base = config.api_base_url or DEFAULT_API_BASE
-    local saved_state = ensure_pa_state()
-    state.playlist = saved_state.playlist
-    state.loop_mode = saved_state.loop_mode or "repeat_all"
-    state.current_index = saved_state.current_index or 1
-    state.controller_api_base = saved_state.api_base_url or state.controller_api_base
-  else
-    state.controller_api_base = config.api_base_url or DEFAULT_API_BASE
-  end
 end
 
 local function refresh_peripherals()
@@ -360,15 +348,10 @@ local function init()
     state.playlist = saved_state.playlist or {}
     state.loop_mode = saved_state.loop_mode or "repeat_all"
     state.current_index = saved_state.current_index or 1
-    if saved_state.api_base_url and saved_state.api_base_url ~= "" then
-      state.controller_api_base = saved_state.api_base_url
-      config.api_base_url = saved_state.api_base_url
-      persist_config()
-    else
-      state.controller_api_base = config.api_base_url or DEFAULT_API_BASE
-    end
+    state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
   else
-    state.controller_api_base = config.api_base_url or DEFAULT_API_BASE
+    -- Stations get API base from controller broadcasts
+    state.controller_api_base = DEFAULT_API_BASE
   end
 
   local prev = term.redirect(base_term)
@@ -426,11 +409,7 @@ local function reload_state()
   state.playlist = saved_state.playlist or {}
   state.loop_mode = saved_state.loop_mode or "repeat_all"
   state.current_index = saved_state.current_index or 1
-  if saved_state.api_base_url and saved_state.api_base_url ~= "" then
-    state.controller_api_base = saved_state.api_base_url
-    config.api_base_url = saved_state.api_base_url
-    persist_config()
-  end
+  state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
   log("INFO", string.format("Reloaded playlist (%d entries)", #(state.playlist or {})))
   os.queueEvent("render_ui")
 end
@@ -496,6 +475,8 @@ end
 local marquee_timer
 
 local function stop_audio()
+  local was_active = (audio_state.status == "streaming" or audio_state.status == "waiting") and audio_state.mode ~= nil
+
   audio_state.status = "idle"
   audio_state.mode = nil
   audio_state.url = nil
@@ -514,7 +495,10 @@ local function stop_audio()
       pending_requests[url] = nil
     end
   end
-  log("INFO", "Audio playback halted (mode cleared)")
+
+  if was_active then
+    log("INFO", "Audio playback halted")
+  end
 end
 
 local function schedule_marquee()
@@ -1049,15 +1033,13 @@ local function handle_command(line)
   elseif cmd == "reload" then
     reload_state()
   elseif cmd == "setapi" then
-    if rest == "" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can change API base URL")
+    elseif rest == "" then
       log("WARN", "Usage: setapi <url>")
     else
       state.controller_api_base = rest
-      config.api_base_url = rest
-      persist_config()
-      if role == "controller" then
-        persist_pa_state()
-      end
+      persist_pa_state()
       log("INFO", "API base updated to " .. rest)
     end
   elseif cmd == "clear" then
@@ -1181,6 +1163,7 @@ local function httpLoop()
           audio_state.status = "streaming"
           audio_state.start = handle.read(4)
           audio_state.chunk_size = 16 * 1024 - 4
+          audio_state.consecutive_failures = 0
           os.queueEvent("audio_update")
         else
           handle.close()
@@ -1201,19 +1184,37 @@ local function httpLoop()
             detail = detail .. " | BODY: " .. body
           end
           log("ERROR", string.format("Failed to fetch %s stream (%s)%s", request.label or request.kind, url, detail))
-          stop_audio()
-          if request.kind == "music" then
-            if role == "controller" then
-              advance_playlist()
-            else
+
+          audio_state.consecutive_failures = audio_state.consecutive_failures + 1
+
+          if audio_state.consecutive_failures >= 3 then
+            log("ERROR", "Too many consecutive failures - stopping playback")
+            stop_audio()
+            if request.kind == "music" then
               state.now_playing = nil
               os.queueEvent("render_ui")
+            elseif request.kind == "pa" then
+              if role == "controller" then
+                end_pa()
+              else
+                clear_marquee()
+              end
             end
-          elseif request.kind == "pa" then
-            if role == "controller" then
-              end_pa()
-            else
-              clear_marquee()
+          else
+            stop_audio()
+            if request.kind == "music" then
+              if role == "controller" then
+                advance_playlist()
+              else
+                state.now_playing = nil
+                os.queueEvent("render_ui")
+              end
+            elseif request.kind == "pa" then
+              if role == "controller" then
+                end_pa()
+              else
+                clear_marquee()
+              end
             end
           end
         end
