@@ -133,31 +133,28 @@ local function log(severity, message)
 end
 
 local function print_help()
-  local commands
+  local help_text
   if role == "controller" then
-    commands = {
-      "help              Show this help",
-      "status            Display current state snapshot",
-      "playlist          List playlist entries with pointer",
-      "next              Skip to next track",
-      "play              Start/resume current track",
-      "stop              Stop playback immediately",
-      "pa \"msg\" [url]  Broadcast PA with optional audio",
-      "reload            Reload /.pa_state from disk",
-      "setapi <url>      Update streaming API base URL",
-      "clear             Clear log window",
-    }
+    help_text = [[Available commands:
+  help - show this help
+  status - display current state
+  playlist - list playlist entries
+  play - start/resume playback
+  stop - stop playback
+  next - skip to next track
+  add <url> [title] - add track to playlist
+  remove <index> - remove track from playlist
+  pa "msg" [url] - broadcast PA announcement
+  reload - reload state from disk
+  setapi <url> - update API base URL
+  clear - clear log window]]
   else
-    commands = {
-      "help              Show this help",
-      "status            Display current state snapshot",
-      "clear             Clear log window",
-    }
+    help_text = [[Available commands:
+  help - show this help
+  status - display current state
+  clear - clear log window]]
   end
-  log("INFO", "Available commands:")
-  for _, line in ipairs(commands) do
-    log("INFO", "  " .. line)
-  end
+  log("INFO", help_text)
 end
 
 local function read_file(path)
@@ -1028,6 +1025,45 @@ local function handle_command(line)
           end
           begin_pa(text, audio)
         end
+      end
+    end
+  elseif cmd == "add" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can modify playlist")
+    elseif rest == "" then
+      log("WARN", "Usage: add <url> [title]")
+    else
+      local url, title = rest:match("^(%S+)%s*(.*)$")
+      if not url or url == "" then
+        log("WARN", "Invalid URL")
+      else
+        local entry = { url = url }
+        if title and title ~= "" then
+          entry.title = title
+        end
+        table.insert(state.playlist, entry)
+        persist_pa_state()
+        log("INFO", string.format("Added track #%d: %s", #state.playlist, title or url))
+      end
+    end
+  elseif cmd == "remove" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can modify playlist")
+    elseif rest == "" then
+      log("WARN", "Usage: remove <index>")
+    else
+      local index = tonumber(rest)
+      if not index or index < 1 or index > #state.playlist then
+        log("WARN", string.format("Invalid index (must be 1-%d)", #state.playlist))
+      else
+        local removed = table.remove(state.playlist, index)
+        if state.current_index > index then
+          state.current_index = state.current_index - 1
+        elseif state.current_index == index then
+          state.current_index = math.min(state.current_index, #state.playlist)
+        end
+        persist_pa_state()
+        log("INFO", string.format("Removed track #%d: %s", index, removed.title or removed.url))
       end
     end
   elseif cmd == "reload" then
