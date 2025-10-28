@@ -77,16 +77,13 @@ local function redraw_logs()
   if visible < 1 then
     visible = 1
   end
-  LOG_HISTORY = math.max(80, visible)
+  LOG_HISTORY = math.max(200, visible * 10)
   local start = math.max(1, #log_lines - visible + 1)
   for row = 0, visible - 1 do
     term.setCursorPos(1, log_start_row + row)
     term.clearLine()
     local line = log_lines[start + row]
     if line then
-      if #line > term_width then
-        line = line:sub(#line - term_width + 1)
-      end
       term.write(line)
     end
   end
@@ -123,11 +120,24 @@ local function log(severity, message)
     severity = "INFO"
   end
   local timestamp = textutils.formatTime(os.time(), true)
-  local line = string.format("[%s][%s] %s", timestamp, severity, message)
-  table.insert(log_lines, line)
-  if #log_lines > LOG_HISTORY then
-    table.remove(log_lines, 1)
+
+  -- Split multiline messages and wrap long lines
+  for line in (message .. "\n"):gmatch("([^\n]*)\n") do
+    if line ~= "" then
+      local formatted = string.format("[%s][%s] %s", timestamp, severity, line)
+
+      -- Wrap long lines to terminal width
+      while #formatted > 0 do
+        local chunk = formatted:sub(1, term_width)
+        table.insert(log_lines, chunk)
+        if #log_lines > LOG_HISTORY then
+          table.remove(log_lines, 1)
+        end
+        formatted = formatted:sub(term_width + 1)
+      end
+    end
   end
+
   redraw_logs()
   queue_prompt_redraw()
 end
