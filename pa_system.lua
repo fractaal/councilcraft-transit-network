@@ -261,7 +261,7 @@ local function ensure_pa_state()
     },
     loop_mode = "repeat_all",
     current_index = 1,
-    api_base_url = (config and config.api_base_url) or DEFAULT_API_BASE,
+    api_base_url = state.controller_api_base or DEFAULT_API_BASE,
   }
 
   save_table(STATE_PATH, default_state)
