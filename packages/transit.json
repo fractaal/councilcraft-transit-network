@@ -5,7 +5,7 @@
   "files": [
     {
       "path": "/apps/transit/transit.lua",
-      "url": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/transit.lua"
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"
     }
   ],
   "startup": {

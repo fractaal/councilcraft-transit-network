@@ -11,7 +11,7 @@ local function ensure_module()
     return mod
   end
 
-  local url = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/lib/composer.lua"
+  local url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/lib/composer.lua"
   print("composer: bootstrapping module from repo...")
   local resp = http.get(url)
   if not resp then

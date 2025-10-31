@@ -66,10 +66,10 @@ base_url = "PLACEHOLDER_BASE_URL",
 
 **After:**
 ```lua
-base_url = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/",
+base_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/",
 ```
 
-(Replace `benjude` with your GitHub username if different)
+(Replace `fractaal` with your GitHub username if different)
 
 - [ ] `base_url` set to your GitHub raw URL
 - [ ] URL ends with `/sounds/`

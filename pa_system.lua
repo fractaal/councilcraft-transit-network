@@ -24,7 +24,7 @@ end
 
 local DEFAULT_API_BASE = "https://example-pa-endpoint.run.app"
 local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
-local CHIME_URL = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/SG_MRT_BELL.dfpwm"
+local CHIME_URL = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/SG_MRT_BELL.dfpwm"
 
 local MONITOR_TEXT_SCALE = 1.5
 local MARQUEE_MIN_GAP = 6

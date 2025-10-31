@@ -5,7 +5,7 @@
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",
-      "url": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/pa_system.lua"
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/pa_system.lua"
     }
   ],
   "startup": {

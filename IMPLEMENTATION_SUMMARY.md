@@ -137,10 +137,10 @@ git push
 
 Edit line 406:
 ```lua
-base_url = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/",
+base_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/",
 ```
 
-Replace `benjude` with your GitHub username if different.
+Replace `fractaal` with your GitHub username if different.
 
 ### 5. Deploy to Minecraft
 

@@ -20,8 +20,7 @@ A ComputerCraft: Tweaked automated transit system for Minecraft. This system use
 On any ComputerCraft: Tweaked computer with HTTP enabled:
 
 ```lua
-wget https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/lib/composer.lua /lib/composer.lua
-wget https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/composer.lua composer.lua
+wget https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/composer.lua composer.lua
 composer install transit       -- installs /apps/transit/transit.lua + startup stub
 composer install pa-system     -- installs /apps/pa_system/pa_system.lua + startup stub
 ```

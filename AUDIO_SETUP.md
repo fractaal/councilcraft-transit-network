@@ -68,7 +68,7 @@ audio.config = {
 
 Example:
 ```lua
-base_url = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/",
+base_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/",
 ```
 
 ## Step 4: Configure Station Sequences

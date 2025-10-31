@@ -4,7 +4,7 @@
 local composer = {}
 
 local STATE_PATH = "/.composer/state.json"
-local INDEX_URL = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/packages/index.json"
+local INDEX_URL = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/packages/index.json"
 local json = {}
 json.encode = textutils.serializeJSON
 json.decode = textutils.unserializeJSON
