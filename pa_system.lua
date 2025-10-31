@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.1.1-pa-fixes"
+local VERSION = "0.1.2"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then

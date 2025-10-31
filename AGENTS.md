@@ -291,4 +291,4 @@ Since this runs IN Minecraft:
 - **v0.1**: Initial release (basic station coordination)
 
 ## UPDATE VERSION ALWAYS PER CHANGE
-Remember to UPDATE THE VERSION STRING ALWAYS upon each commit with a meaningful identifier.
+Remember to UPDATE THE VERSION STRING IN THE COMPOSER INDEX ALWAYS upon each commit with a meaningful identifier.

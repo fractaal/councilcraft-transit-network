@@ -6,7 +6,7 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.11.0"
+local VERSION = "v0.11.1"
 local DESCRIPTOR="non-blocking-audio-parallel-loops"
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then

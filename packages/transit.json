@@ -1,6 +1,6 @@
 {
   "name": "transit",
-  "version": "v0.11.0",
+  "version": "v0.11.1",
   "description": "CouncilCraft Transit network controller/station software.",
   "files": [
     {
