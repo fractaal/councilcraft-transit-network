@@ -634,7 +634,7 @@ local function render_monitors()
 
   if global_scroll then
     if not marquee_timer then
-      marquee_timer = os.startTimer(0.1)
+      marquee_timer = os.startTimer(0.25)
     end
   elseif marquee_timer then
     os.cancelTimer(marquee_timer)
