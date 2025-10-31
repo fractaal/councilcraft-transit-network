@@ -1,6 +1,6 @@
 {
   "name": "pa-system",
-  "version": "0.2.1-persistent-pa-edittitle-handle-guards",
+  "version": "0.2.2-slower-marquee",
   "description": "CouncilCraft PA & Entertainment System controller/station software with internal audio support.",
   "files": [
     {

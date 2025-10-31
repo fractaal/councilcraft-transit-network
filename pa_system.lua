@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.1-persistent-pa-edittitle-handle-guards"
+local VERSION = "0.2.2-slower-marquee"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -714,7 +714,7 @@ end
 
 local function schedule_marquee()
   if not marquee_timer then
-    marquee_timer = os.startTimer(0.1)
+    marquee_timer = os.startTimer(0.25)
   end
 end
 
@@ -1159,7 +1159,7 @@ local function uiLoop()
 
         if any_scroll then
           render_monitors()
-          marquee_timer = os.startTimer(0.1)
+          marquee_timer = os.startTimer(0.25)
         else
           marquee_timer = nil
         end
