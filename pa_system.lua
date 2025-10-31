@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.2-slower-marquee"
+local VERSION = "0.2.3-marquee-constant-fix-persistent-pa"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -29,6 +29,7 @@ local DEFAULT_PAUSE_DURATION = 30  -- Default pause duration in seconds for play
 
 local MONITOR_TEXT_SCALE = 1.5
 local MARQUEE_MIN_GAP = 6
+local MARQUEE_SCROLL_INTERVAL = 0.25  -- Seconds between marquee scroll ticks
 
 local CONFIG_PATH = "/.pa_config"
 local STATE_PATH = "/.pa_state"
@@ -315,11 +316,17 @@ end
 local function ensure_pa_state()
   if fs.exists(STATE_PATH) then
     local tbl = load_table(STATE_PATH)
-    if tbl and type(tbl.playlist) == "table" then
+    if tbl then
+      -- Return existing state even if playlist is missing/malformed
+      -- This preserves other saved fields like persistent_pa_text
+      if not tbl.playlist or type(tbl.playlist) ~= "table" then
+        tbl.playlist = {}
+      end
       return tbl
     end
   end
 
+  -- Only create default state if file doesn't exist or is corrupted
   local default_state = {
     group_id = group_id,
     playlist = {
@@ -442,6 +449,7 @@ local function init()
     if saved_state.persistent_pa_text and saved_state.persistent_pa_text ~= "" then
       state.marquee_text = saved_state.persistent_pa_text
       state.pa_active = true
+      -- Note: schedule_marquee() and render will happen after init completes
       log("INFO", "Restored PA text: " .. saved_state.persistent_pa_text)
     end
   else
@@ -656,7 +664,7 @@ local function render_monitors()
 
   if global_scroll then
     if not marquee_timer then
-      marquee_timer = os.startTimer(0.25)
+      marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
     end
   elseif marquee_timer then
     os.cancelTimer(marquee_timer)
@@ -714,7 +722,7 @@ end
 
 local function schedule_marquee()
   if not marquee_timer then
-    marquee_timer = os.startTimer(0.25)
+    marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
   end
 end
 
@@ -1159,7 +1167,7 @@ local function uiLoop()
 
         if any_scroll then
           render_monitors()
-          marquee_timer = os.startTimer(0.25)
+          marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
         else
           marquee_timer = nil
         end
