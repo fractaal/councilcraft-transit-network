@@ -1,15 +1,38 @@
 -- Composer CLI for CouncilCraft packages
 local tArgs = { ... }
 
-if not package.path:find("/lib/%.%?%.lua", 1, true) then
-  package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
+local function ensure_module()
+  if not package.path:find("/lib/%.%?%.lua", 1, true) then
+    package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
+  end
+
+  local ok, mod = pcall(require, "composer")
+  if ok and mod then
+    return mod
+  end
+
+  local url = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/lib/composer.lua"
+  print("composer: bootstrapping module from repo...")
+  local resp = http.get(url)
+  if not resp then
+    error("composer: failed to download module from " .. url, 0)
+  end
+  if not fs.exists("/lib") then
+    fs.makeDir("/lib")
+  end
+  local handle = fs.open("/lib/composer.lua", "w")
+  handle.write(resp.readAll())
+  handle.close()
+  resp.close()
+
+  local ok2, mod2 = pcall(require, "composer")
+  if not ok2 or not mod2 then
+    error("composer: unable to load module after bootstrap", 0)
+  end
+  return mod2
 end
 
-local ok, composer = pcall(require, "composer")
-if not ok or not composer then
-  print("composer: unable to load /lib/composer.lua")
-  return
-end
+local composer = ensure_module()
 
 local function print_usage()
   print("CouncilCraft Composer")
