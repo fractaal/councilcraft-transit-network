@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.0-internal-scheme-and-pause-primitives"
+local VERSION = "0.2.0a-internal-scheme-and-pause-primitives"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -1869,7 +1869,11 @@ local function httpLoop()
         pending_requests[url] = nil
 
         if not request then
-          handle.close()
+          if handle then
+            handle.close()
+          else
+            log("WARN", "HTTP request to" .. url .. " completed but no pending request found (handle couldn't be closed)")
+          end
           return
         end
 
