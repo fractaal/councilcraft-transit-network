@@ -33,8 +33,8 @@ local function http_get(url, binary)
   end
 
   -- Read immediately to avoid handle being closed
-  local ok, data = pcall(resp.readAll)
-  local close_ok = pcall(resp.close)
+  local ok, data = pcall(function() return resp.readAll() end)
+  local close_ok = pcall(function() resp.close() end)
 
   if not ok then
     return nil, "Failed to read HTTP response for " .. url .. ": " .. tostring(data)
