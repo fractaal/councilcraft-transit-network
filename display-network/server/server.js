@@ -8,7 +8,7 @@ const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PASSCODE = process.env.PASSCODE || 'transit2024';
+const PASSCODE = process.env.PASSCODE || 'COUNCILCRAFT_XD_SHIFTSPRINTERS_GALORE';
 
 // Paths
 const SANJUUNI_PATH = path.join(__dirname, '../../_sanjuuni_reference/sanjuuni');
@@ -160,6 +160,34 @@ app.post('/api/collections', requirePasscode, (req, res) => {
             res.status(500).json({ error: err.message });
         }
     }
+});
+
+// DELETE /api/collections/:id - Delete a collection and all its images
+app.delete('/api/collections/:id', requirePasscode, (req, res) => {
+    const collectionId = req.params.id;
+
+    // Get all images in the collection
+    const images = db.prepare('SELECT * FROM images WHERE collection_id = ?').all(collectionId);
+
+    // Delete all image files
+    for (const image of images) {
+        const uploadPath = path.join(UPLOADS_DIR, image.stored_filename);
+        const processedPath = path.join(PROCESSED_DIR, image.processed_filename);
+        if (fs.existsSync(uploadPath)) fs.unlinkSync(uploadPath);
+        if (fs.existsSync(processedPath)) fs.unlinkSync(processedPath);
+    }
+
+    // Delete images from database (CASCADE will handle this, but being explicit)
+    db.prepare('DELETE FROM images WHERE collection_id = ?').run(collectionId);
+
+    // Delete collection
+    const result = db.prepare('DELETE FROM collections WHERE id = ?').run(collectionId);
+
+    if (result.changes === 0) {
+        return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    res.json({ message: 'Collection deleted', deleted_images: images.length });
 });
 
 // POST /api/upload - Upload and process image

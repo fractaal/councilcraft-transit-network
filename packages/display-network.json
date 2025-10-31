@@ -1,7 +1,7 @@
 {
   "name": "display-network",
-  "version": "1.1.0",
-  "description": "Digital signage system for ComputerCraft monitors with web-based image management",
+  "version": "1.2.0",
+  "description": "Digital signage system for ComputerCraft monitors with web-based image management and smooth palette fade transitions",
   "files": [
     {
       "path": "/display.lua",

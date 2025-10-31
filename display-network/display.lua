@@ -1,12 +1,12 @@
 --[[
     Display Network Client for ComputerCraft
-    Auto-configurable slideshow display with Composer support
+    Auto-configurable slideshow display with smooth palette fade transitions
 
-    Version: 1.1.0
+    Version: 1.2.0
     Author: Display Network
 ]]
 
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local CONFIG_FILE = "/.display_config"
 local POLL_INTERVAL = 5 -- seconds
 local SLIDE_DURATION = 10 -- seconds per slide
@@ -81,8 +81,8 @@ end
 print(string.format("Server: %s", config.server_url))
 print(string.format("Collection: %s", config.collection_name))
 
--- Helper: Draw BIMG frame
-local function drawBIMG(bimgData)
+-- Helper: Draw BIMG frame with fade transition
+local function drawBIMG(bimgData, fadeIn)
     local success, frames = pcall(textutils.unserialize, bimgData)
     if not success or not frames or #frames == 0 then
         return false, "Invalid BIMG data"
@@ -90,8 +90,47 @@ local function drawBIMG(bimgData)
 
     local frame = frames[1] -- First frame
 
-    -- Apply custom palette if present
-    if frame.palette then
+    -- Draw pixels first (before palette animation)
+    display.clear()
+    for y = 1, math.min(#frame, height) do
+        local line = frame[y]
+        if line and #line == 3 then
+            local text, fg, bg = line[1], line[2], line[3]
+            display.setCursorPos(1, y)
+            display.blit(text, fg, bg)
+        end
+    end
+
+    -- Animate palette if present
+    if frame.palette and fadeIn then
+        local targetPalette = {}
+
+        -- Store target colors
+        for i = 0, #frame.palette do
+            local c = frame.palette[i]
+            if type(c) == "table" then
+                targetPalette[i] = {c[1], c[2], c[3]}
+            else
+                targetPalette[i] = {colors.rgb8(c)}
+            end
+        end
+
+        -- Fade in over 1 second (20 frames at 0.05s each)
+        local fadeFrames = 20
+        for step = 0, fadeFrames do
+            local progress = step / fadeFrames
+
+            for i = 0, #frame.palette do
+                if targetPalette[i] then
+                    local r, g, b = table.unpack(targetPalette[i])
+                    display.setPaletteColor(2^i, r * progress, g * progress, b * progress)
+                end
+            end
+
+            sleep(0.05)
+        end
+    elseif frame.palette then
+        -- No fade, just set palette directly
         for i = 0, #frame.palette do
             local c = frame.palette[i]
             if type(c) == "table" then
@@ -102,18 +141,39 @@ local function drawBIMG(bimgData)
         end
     end
 
-    display.clear()
+    return true, frame.palette
+end
 
-    for y = 1, math.min(#frame, height) do
-        local line = frame[y]
-        if line and #line == 3 then
-            local text, fg, bg = line[1], line[2], line[3]
-            display.setCursorPos(1, y)
-            display.blit(text, fg, bg)
+-- Helper: Fade out current palette
+local function fadeOutPalette(palette)
+    if not palette then return end
+
+    local currentPalette = {}
+
+    -- Store current colors
+    for i = 0, #palette do
+        local c = palette[i]
+        if type(c) == "table" then
+            currentPalette[i] = {c[1], c[2], c[3]}
+        else
+            currentPalette[i] = {colors.rgb8(c)}
         end
     end
 
-    return true
+    -- Fade out over 0.5 seconds (10 frames)
+    local fadeFrames = 10
+    for step = fadeFrames, 0, -1 do
+        local progress = step / fadeFrames
+
+        for i = 0, #palette do
+            if currentPalette[i] then
+                local r, g, b = table.unpack(currentPalette[i])
+                display.setPaletteColor(2^i, r * progress, g * progress, b * progress)
+            end
+        end
+
+        sleep(0.05)
+    end
 end
 
 -- Helper: Draw status overlay (bottom-right corner)
@@ -215,6 +275,7 @@ local function runSlideshow()
     local slideIndex = 1
     local currentData = nil
     local lastFetch = 0
+    local currentPalette = nil
 
     while true do
         local now = os.epoch("utc") / 1000
@@ -244,17 +305,28 @@ local function runSlideshow()
         if currentData and #currentData.slides > 0 then
             local slide = currentData.slides[slideIndex]
 
-            -- Draw image
-            local success, drawErr = drawBIMG(slide.data)
+            -- Fade out current palette before switching
+            if currentPalette and slideIndex ~= 1 then
+                fadeOutPalette(currentPalette)
+            end
+
+            -- Draw image with fade in
+            local success, palette = drawBIMG(slide.data, true)
             if not success then
-                showStatus("Error drawing slide: " .. drawErr, true)
+                showStatus("Error drawing slide: " .. palette, true)
                 sleep(5)
             else
-                -- Overlay status and caption
+                currentPalette = palette
+
+                -- Overlay status and caption (after fade completes)
                 drawStatusOverlay(slideIndex, #currentData.slides, slide.caption)
 
-                -- Wait for next slide
-                sleep(SLIDE_DURATION)
+                -- Wait for next slide (accounting for fade time)
+                -- Fade in = 1s, fade out = 0.5s, so reduce wait time
+                local remainingTime = SLIDE_DURATION - 1.5
+                if remainingTime > 0 then
+                    sleep(remainingTime)
+                end
             end
 
             -- Next slide (loop)
