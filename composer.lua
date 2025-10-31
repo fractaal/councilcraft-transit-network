@@ -35,13 +35,16 @@ if cmd == "install" or cmd == "update" then
     return
   end
   write(string.format("Installing '%s'... ", pkg))
-  local ok, err = composer.install(pkg)
+  local ok, result = composer.install(pkg)
   if ok then
     print("done")
+    if result then
+      print("  version: " .. tostring(result))
+    end
   else
     print("failed")
-    if err then
-      print("  " .. tostring(err))
+    if result then
+      print("  " .. tostring(result))
     end
   end
 elseif cmd == "list" then

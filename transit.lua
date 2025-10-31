@@ -1874,6 +1874,11 @@ local function runOps(config)
     local remote_version = nil
     local last_update_check = 0
     local composer_failure_logged = false
+    local update_checker
+    local update_state
+    if composer then
+        update_checker, update_state = composer.create_update_checker("transit", VERSION, 30)
+    end
 
     -- Setup
     term.clear()
@@ -2091,15 +2096,30 @@ local function runOps(config)
     end
 
     -- Check remote version from GitHub (ops only)
+    local function sync_update_state()
+        if update_state then
+            if update_state.latest_version then
+                remote_version = update_state.latest_version
+            end
+            update_available = update_state.update_available or false
+        end
+    end
+
     local function checkRemoteVersion()
-        if composer then
+        sync_update_state()
+        if update_state then
+            composer_failure_logged = false
+            return
+        end
+
+        if composer and not composer_failure_logged then
             local result = composer.check("transit", VERSION)
             if result.ok then
                 remote_version = result.version or VERSION
                 update_available = result.update_available or false
                 composer_failure_logged = false
                 return
-            elseif not composer_failure_logged then
+            else
                 print("[UPDATE] Composer check failed: " .. tostring(result.error))
                 composer_failure_logged = true
             end
@@ -2562,13 +2582,14 @@ local function runOps(config)
         print(string.format("[UPDATE] New version available: %s (running %s)", tostring(remote_version or "?"), VERSION))
     end
 
-    -- Main loop
-    local last_dispatch_check = 0
-    local dispatched = false
-    local last_modem_check = 0
+    local function opsMainLoop()
+        local last_dispatch_check = 0
+        local dispatched = false
+        local last_modem_check = 0
 
-    while true do
-        local now = os.epoch("utc") / 1000
+        while true do
+            sync_update_state()
+            local now = os.epoch("utc") / 1000
 
         -- Periodic discovery
         if now - last_discovery > config.discovery_interval then
@@ -2678,9 +2699,16 @@ local function runOps(config)
             else
                 if MODEM_DEBUG then print("[DEBUG] ERROR: Non-string message: " .. type(message)) end
             end
-        elseif event == "timer" and param1 == timer then
-            -- Timeout, continue loop
+            elseif event == "timer" and param1 == timer then
+                -- Timeout, continue loop
+            end
         end
+    end
+
+    if update_checker then
+        parallel.waitForAny(opsMainLoop, update_checker)
+    else
+        opsMainLoop()
     end
 end
 

@@ -16,6 +16,12 @@ do
   end
 end
 
+local update_checker
+local update_state
+if composer then
+  update_checker, update_state = composer.create_update_checker("pa-system", VERSION, 30)
+end
+
 local DEFAULT_API_BASE = "https://example-pa-endpoint.run.app"
 local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
 local CHIME_URL = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/SG_MRT_BELL.dfpwm"
@@ -51,6 +57,7 @@ local state = {
   pa_resume_context = nil,
   latest_version = VERSION,
   update_available = false,
+  last_update_error = nil,
 }
 
 local speakers = {}
@@ -447,7 +454,7 @@ local function init()
     log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
   end
   log("INFO", "Type 'help' for command list.")
-  check_for_updates()
+  sync_update_state()
 end
 
 local function persist_pa_state()
@@ -550,19 +557,20 @@ local function collect_marquee_rows()
   return rows
 end
 
-local function check_for_updates()
-  if not composer then
-    return
-  end
-  local result = composer.check("pa-system", VERSION)
-  if not result.ok then
-    log("WARN", "Composer update check failed: " .. tostring(result.error))
-    return
-  end
-  state.latest_version = result.version or VERSION
-  state.update_available = result.update_available or false
-  if state.update_available then
-    log("INFO", string.format("Update available: %s (running %s)", state.latest_version, VERSION))
+local function sync_update_state()
+  if update_state then
+    if update_state.latest_version then
+      state.latest_version = update_state.latest_version
+    end
+    state.update_available = update_state.update_available or false
+    if update_state.last_error ~= state.last_update_error then
+      state.last_update_error = update_state.last_error
+      if update_state.last_error then
+        log("WARN", "Composer update check failed: " .. tostring(update_state.last_error))
+      else
+        log("INFO", "Composer update check restored")
+      end
+    end
   end
 end
 
@@ -571,6 +579,7 @@ local function render_monitors()
     return
   end
 
+  sync_update_state()
   local rows = collect_marquee_rows()
   for _, row in ipairs(rows) do
     row.active_scroll = false
@@ -1433,6 +1442,7 @@ local function handle_command(line)
   if cmd == "help" or cmd == "?" then
     print_help()
   elseif cmd == "status" then
+    sync_update_state()
     local parts = {
       "role=" .. role,
       "group=" .. group_id,
@@ -1554,12 +1564,16 @@ local function handle_command(line)
       log("WARN", "Composer not available on this system")
     else
       log("INFO", "Checking for updates via composer...")
-      local ok, err = composer.install("pa-system")
+      local ok, result = composer.install("pa-system")
       if ok then
         log("INFO", "Update installed. Please restart to run the latest version.")
-        state.update_available = false
+        if update_state then
+          update_state.current_version = result or update_state.latest_version or update_state.current_version
+          update_state.update_available = false
+        end
+        sync_update_state()
       else
-        log("ERROR", "Composer update failed: " .. tostring(err or "unknown"))
+        log("ERROR", "Composer update failed: " .. tostring(result or "unknown"))
       end
     end
   elseif cmd == "pa" then
@@ -1850,12 +1864,20 @@ end
 
 local function controller_main()
   -- Don't auto-play on startup - let user start playback manually
-  parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop)
+  if update_checker then
+    parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop, update_checker)
+  else
+    parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop)
+  end
 end
 
 local function station_main()
   station_register()
-  parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, supervisorLoop, station_watchdog_loop)
+  if update_checker then
+    parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, supervisorLoop, station_watchdog_loop, update_checker)
+  else
+    parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, supervisorLoop, station_watchdog_loop)
+  end
 end
 
 init()

@@ -181,7 +181,11 @@ function composer.install(package_name)
   if not manifest then
     return false, m_err
   end
-  return perform_install(package_name, manifest)
+  local ok, perr = perform_install(package_name, manifest)
+  if not ok then
+    return false, perr
+  end
+  return true, manifest.version
 end
 
 function composer.update(package_name)
@@ -222,6 +226,42 @@ end
 
 function composer.get_state()
   return state
+end
+
+function composer.create_update_checker(package_name, current_version, interval)
+  if type(package_name) ~= "string" then
+    error("package_name must be a string", 2)
+  end
+  interval = tonumber(interval) or 30
+  if interval < 1 then interval = 1 end
+
+  local watcher_state = {
+    package = package_name,
+    current_version = current_version,
+    latest_version = current_version,
+    update_available = false,
+    last_error = nil,
+    last_check = nil,
+  }
+
+  local function loop()
+    while true do
+      local result = composer.check(package_name, watcher_state.current_version)
+      watcher_state.last_check = os.epoch("utc")
+      if not result.ok then
+        watcher_state.last_error = result.error
+      else
+        watcher_state.last_error = nil
+        if result.version then
+          watcher_state.latest_version = result.version
+        end
+        watcher_state.update_available = result.update_available or false
+      end
+      sleep(interval)
+    end
+  end
+
+  return loop, watcher_state
 end
 
 return composer
