@@ -17,10 +17,35 @@ local function http_get(url, binary)
   else
     resp = http.get(url, headers)
   end
+
+  -- Validate immediately after http.get
   if not resp then
     return nil, "HTTP request failed for " .. url
   end
-  return resp
+  if type(resp) ~= "table" then
+    return nil, "HTTP response is not a table (got " .. type(resp) .. ") for " .. url
+  end
+  if type(resp.readAll) ~= "function" then
+    return nil, "HTTP response missing readAll function for " .. url
+  end
+  if type(resp.close) ~= "function" then
+    return nil, "HTTP response missing close function for " .. url
+  end
+
+  -- Read immediately to avoid handle being closed
+  local ok, data = pcall(resp.readAll)
+  local close_ok = pcall(resp.close)
+
+  if not ok then
+    return nil, "Failed to read HTTP response for " .. url .. ": " .. tostring(data)
+  end
+
+  if not data then
+    return nil, "Empty HTTP response for " .. url
+  end
+
+  -- Return data instead of handle
+  return data
 end
 
 local function ensure_dir(path)
@@ -62,21 +87,9 @@ end
 load_state()
 
 local function load_index()
-  local resp, err = http_get(INDEX_URL)
-  if not resp then
+  local body, err = http_get(INDEX_URL)
+  if not body then
     return nil, err
-  end
-
-  -- Verify response handle is valid before reading
-  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
-    return nil, "Invalid HTTP response handle"
-  end
-
-  local body = resp.readAll()
-  resp.close()
-
-  if not body or body == "" then
-    return nil, "Empty response from index"
   end
 
   local parsed = json.decode(body)
@@ -91,21 +104,9 @@ local function load_manifest(package_entry)
   if not url then
     return nil, "Manifest URL missing"
   end
-  local resp, err = http_get(url)
-  if not resp then
+  local body, err = http_get(url)
+  if not body then
     return nil, err
-  end
-
-  -- Verify response handle is valid before reading
-  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
-    return nil, "Invalid HTTP response handle"
-  end
-
-  local body = resp.readAll()
-  resp.close()
-
-  if not body or body == "" then
-    return nil, "Empty response from manifest"
   end
 
   local manifest = json.decode(body)
@@ -116,21 +117,9 @@ local function load_manifest(package_entry)
 end
 
 local function download_file(url, destination)
-  local resp, err = http_get(url, true)
-  if not resp then
+  local data, err = http_get(url, true)
+  if not data then
     return false, err
-  end
-
-  -- Verify response handle is valid before reading
-  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
-    return false, "Invalid HTTP response handle"
-  end
-
-  local data = resp.readAll()
-  resp.close()
-
-  if not data or data == "" then
-    return false, "Empty response"
   end
 
   ensure_dir(destination)
