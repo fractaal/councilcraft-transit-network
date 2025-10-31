@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.1.3b-forward-ref-fix-and-remove-pa-prefix"
+local VERSION = "0.2.0-internal-scheme-and-pause-primitives"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -25,6 +25,7 @@ end
 local DEFAULT_API_BASE = "https://example-pa-endpoint.run.app"
 local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
 local CHIME_URL = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/SG_MRT_BELL.dfpwm"
+local DEFAULT_PAUSE_DURATION = 30  -- Default pause duration in seconds for playlist entries
 
 local MONITOR_TEXT_SCALE = 1.5
 local MARQUEE_MIN_GAP = 6
@@ -58,6 +59,7 @@ local state = {
   latest_version = VERSION,
   update_available = false,
   last_update_error = nil,
+  pause_timer = nil,  -- Timer ID for playlist pause entries
 }
 
 local speakers = {}
@@ -207,6 +209,7 @@ local function print_help()
   next - skip to next track
   goto <index> - jump to track by index
   add <url> - add track to playlist
+  addpause [seconds] - add pause between tracks
   remove <index> - remove track from playlist
   move <from> <to> - reorder tracks
   volume [0.0-3.0] - get/set playback volume
@@ -703,6 +706,24 @@ local function clear_marquee()
   os.queueEvent("render_ui")
 end
 
+local function resolve_audio_url(url)
+  if not url then
+    return { type = "error", error = "URL is nil" }
+  end
+
+  if url:sub(1, 11) == "internal://" then
+    local filename = url:sub(12)  -- strip "internal://"
+    local path = "/apps/pa_system/sounds/" .. filename .. ".dfpwm"
+    if fs.exists(path) then
+      return { type = "internal", path = path, url = url }
+    else
+      return { type = "error", error = "File not found: " .. path }
+    end
+  else
+    return { type = "http", url = url }
+  end
+end
+
 local function build_api_url(path, yt_url)
   local base = state.controller_api_base or DEFAULT_API_BASE
   if base:sub(-1) == "/" then
@@ -714,9 +735,44 @@ end
 local function request_stream(kind, url, context)
   context = context or {}
   context.kind = kind
-  log("INFO", string.format("HTTP request queued (%s): %s", kind, url))
-  pending_requests[url] = context
-  http.request({ url = url, method = "GET", binary = true })
+
+  -- Resolve URL to check if it's internal or HTTP
+  local resolved = resolve_audio_url(url)
+
+  if resolved.type == "internal" then
+    -- Handle internal file directly
+    log("INFO", string.format("Opening internal file (%s): %s", kind, resolved.path))
+
+    local file_handle = fs.open(resolved.path, "rb")
+    if not file_handle then
+      log("ERROR", "Failed to open internal file: " .. resolved.path)
+      audio_state.status = "idle"
+      return
+    end
+
+    -- Set up audio state for streaming from local file
+    audio_state.handle = file_handle
+    audio_state.status = "streaming"
+    audio_state.start = file_handle.read(4)  -- Read DFPWM header
+    audio_state.chunk_size = 16 * 1024 - 4
+    audio_state.consecutive_failures = 0
+    audio_state.decoder = require("cc.audio.dfpwm").make_decoder()
+
+    if kind == "music" then
+      start_time_tracker()
+    end
+
+    os.queueEvent("audio_update")
+  elseif resolved.type == "http" then
+    -- Handle HTTP request as before
+    log("INFO", string.format("HTTP request queued (%s): %s", kind, url))
+    pending_requests[url] = context
+    http.request({ url = url, method = "GET", binary = true })
+  else
+    -- Error case
+    log("ERROR", string.format("Failed to resolve URL (%s): %s", kind, resolved.error or "unknown error"))
+    audio_state.status = "idle"
+  end
 end
 
 local function request_info(url, index)
@@ -761,7 +817,18 @@ local function start_music_stream(entry)
     log("INFO", "Starting track: " .. (entry.url or "(unknown)"))
   end
 
-  local stream_url = build_api_url("/stream", entry.url)
+  -- Resolve URL to check if it's internal
+  local resolved = resolve_audio_url(entry.url)
+  local is_internal = (resolved.type == "internal")
+
+  local stream_url
+  if is_internal then
+    -- For internal files, use the internal:// URL directly
+    stream_url = entry.url
+  else
+    -- For HTTP URLs, build the API streaming URL
+    stream_url = build_api_url("/stream", entry.url)
+  end
 
   broadcast({
     type = "music_start",
@@ -769,6 +836,7 @@ local function start_music_stream(entry)
     title = entry.title,
     artist = entry.artist,
     stream_url = stream_url,
+    is_internal = is_internal,
     started_at = os.epoch("utc"),
   })
 
@@ -804,11 +872,42 @@ local function advance_playlist()
     entry = state.playlist[state.current_index]
   end
 
-  -- Only request info if we don't already have it and no request pending
-  if not entry.title or not entry.artist then
-    local info_url = build_api_url("/info", entry.url)
-    if not pending_requests[info_url] then
-      request_info(entry.url, state.current_index)
+  -- Check if this is a pause entry
+  if entry.type == "pause" then
+    local duration = entry.duration or DEFAULT_PAUSE_DURATION
+    log("INFO", string.format("Pausing playlist for %d seconds", duration))
+
+    -- Clear now playing and stop audio
+    state.now_playing = nil
+    state.paused = false
+    broadcast({ type = "music_stop" })
+    os.queueEvent("render_ui")
+
+    -- Start pause timer
+    state.pause_timer = os.startTimer(duration)
+
+    -- Advance index for next play
+    if state.loop_mode == "repeat_one" then
+      -- stay on same index
+    else
+      state.current_index = state.current_index + 1
+      if state.current_index > #state.playlist then
+        state.current_index = 1
+      end
+    end
+
+    persist_pa_state()
+    return
+  end
+
+  -- Normal track entry - only request info if we don't already have it
+  if entry.url and not entry.url:sub(1, 11) == "internal://" then
+    -- Only fetch metadata for HTTP URLs
+    if not entry.title or not entry.artist then
+      local info_url = build_api_url("/info", entry.url)
+      if not pending_requests[info_url] then
+        request_info(entry.url, state.current_index)
+      end
     end
   end
 
@@ -1240,7 +1339,8 @@ local function handle_station_music_start(message)
   os.queueEvent("render_ui")
   schedule_marquee()
 
-  log("INFO", string.format("Controller started track: %s (%s) stream=%s", message.title or message.track_url or "(unknown)", message.track_url or "", message.stream_url or ""))
+  local stream_indicator = message.is_internal and "internal" or "http"
+  log("INFO", string.format("Controller started track: %s (%s) [%s]", message.title or message.track_url or "(unknown)", message.track_url or "", stream_indicator))
 
   if #speakers == 0 then
     return
@@ -1473,8 +1573,14 @@ local function handle_command(line)
     else
       for index, entry in ipairs(state.playlist) do
         local marker = (state.current_index == index) and "*" or " "
-        local title = entry.title or "(untitled)"
-        log("INFO", string.format("%s[%d] %s", marker, index, title))
+        local display
+        if entry.type == "pause" then
+          local duration = entry.duration or DEFAULT_PAUSE_DURATION
+          display = string.format("(pause: %ds)", duration)
+        else
+          display = entry.title or entry.url or "(untitled)"
+        end
+        log("INFO", string.format("%s[%d] %s", marker, index, display))
       end
     end
   elseif cmd == "next" then
@@ -1609,6 +1715,16 @@ local function handle_command(line)
         persist_pa_state()
         log("INFO", string.format("Added track #%d: %s", #state.playlist, track_url))
       end
+    end
+  elseif cmd == "addpause" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can modify playlist")
+    else
+      local duration = tonumber(rest) or DEFAULT_PAUSE_DURATION
+      local entry = { type = "pause", duration = duration }
+      table.insert(state.playlist, entry)
+      persist_pa_state()
+      log("INFO", string.format("Added pause entry #%d: %d seconds", #state.playlist, duration))
     end
   elseif cmd == "remove" then
     if role ~= "controller" then
@@ -1857,7 +1973,16 @@ local function supervisorLoop()
     elseif name == "pa_sequence_complete" and role == "controller" then
       complete_pa_audio()
     elseif name == "timer" then
-      -- timers handled elsewhere
+      local timer_id = event[2]
+      -- Handle playlist pause timer
+      if state.pause_timer and timer_id == state.pause_timer then
+        state.pause_timer = nil
+        if role == "controller" then
+          log("INFO", "Pause complete, advancing playlist")
+          advance_playlist()
+        end
+      end
+      -- Other timers handled elsewhere (marquee, time_update)
     end
   end
 end

@@ -1,11 +1,15 @@
 {
   "name": "pa-system",
-  "version": "0.1.3b-forward-ref-fix-and-remove-pa-prefix",
-  "description": "CouncilCraft PA & Entertainment System controller/station software.",
+  "version": "0.2.0-internal-scheme-and-pause-primitives",
+  "description": "CouncilCraft PA & Entertainment System controller/station software with internal audio support.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",
       "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/pa_system.lua"
+    },
+    {
+      "path": "/apps/pa_system/sounds/WELCOME_IMTL.dfpwm",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/WELCOME_IMTL.dfpwm"
     }
   ],
   "startup": {
