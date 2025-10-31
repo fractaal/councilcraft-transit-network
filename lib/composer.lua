@@ -10,8 +10,14 @@ json.encode = textutils.serializeJSON
 json.decode = textutils.unserializeJSON
 
 local function http_get(url, binary)
-  local ok, resp = pcall(http.get, url, nil, binary)
-  if not ok or not resp then
+  local headers = {}  -- Empty table instead of nil
+  local resp
+  if binary then
+    resp = http.get(url, headers, true)
+  else
+    resp = http.get(url, headers)
+  end
+  if not resp then
     return nil, "HTTP request failed for " .. url
   end
   return resp
@@ -60,8 +66,19 @@ local function load_index()
   if not resp then
     return nil, err
   end
+
+  -- Verify response handle is valid before reading
+  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
+    return nil, "Invalid HTTP response handle"
+  end
+
   local body = resp.readAll()
   resp.close()
+
+  if not body or body == "" then
+    return nil, "Empty response from index"
+  end
+
   local parsed = json.decode(body)
   if not parsed or type(parsed.packages) ~= "table" then
     return nil, "Invalid composer index"
@@ -78,8 +95,19 @@ local function load_manifest(package_entry)
   if not resp then
     return nil, err
   end
+
+  -- Verify response handle is valid before reading
+  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
+    return nil, "Invalid HTTP response handle"
+  end
+
   local body = resp.readAll()
   resp.close()
+
+  if not body or body == "" then
+    return nil, "Empty response from manifest"
+  end
+
   local manifest = json.decode(body)
   if not manifest or type(manifest) ~= "table" then
     return nil, "Invalid manifest for package"
@@ -92,11 +120,19 @@ local function download_file(url, destination)
   if not resp then
     return false, err
   end
+
+  -- Verify response handle is valid before reading
+  if type(resp) ~= "table" or type(resp.readAll) ~= "function" then
+    return false, "Invalid HTTP response handle"
+  end
+
   local data = resp.readAll()
   resp.close()
-  if not data then
+
+  if not data or data == "" then
     return false, "Empty response"
   end
+
   ensure_dir(destination)
   local temp_path = destination .. ".tmp"
   if fs.exists(temp_path) then fs.delete(temp_path) end
@@ -192,7 +228,7 @@ function composer.update(package_name)
   return composer.install(package_name)
 end
 
-function composer.check(package_name, current_version)
+function composer.check(package_name)
   local index, err = load_index()
   if not index then
     return { ok = false, error = err }
@@ -205,13 +241,29 @@ function composer.check(package_name, current_version)
   if not manifest then
     return { ok = false, error = m_err }
   end
-  local remote_version = manifest.version
-  local update_available = remote_version and current_version and remote_version ~= current_version
+
+  local installed_version = nil
+  local installed = state.packages[package_name]
+  if installed then
+    installed_version = installed.version
+  end
+
+  local latest_version = manifest.version
+  local update_available = false
+
+  if installed_version and latest_version then
+    update_available = (installed_version ~= latest_version)
+  elseif not installed_version and latest_version then
+    -- Not installed at all
+    update_available = true
+  end
+
   return {
     ok = true,
-    manifest = manifest,
-    version = remote_version,
+    installed_version = installed_version,
+    latest_version = latest_version,
     update_available = update_available,
+    manifest = manifest,
   }
 end
 
@@ -219,6 +271,25 @@ function composer.list()
   local packages = {}
   for name, info in pairs(state.packages) do
     table.insert(packages, { name = name, version = info.version })
+  end
+  table.sort(packages, function(a, b) return a.name < b.name end)
+  return packages
+end
+
+function composer.available()
+  local index, err = load_index()
+  if not index then
+    return nil, err
+  end
+
+  local packages = {}
+  for name, entry in pairs(index) do
+    local installed = state.packages[name]
+    table.insert(packages, {
+      name = name,
+      installed = installed ~= nil,
+      installed_version = installed and installed.version or nil,
+    })
   end
   table.sort(packages, function(a, b) return a.name < b.name end)
   return packages
@@ -235,10 +306,11 @@ function composer.create_update_checker(package_name, current_version, interval)
   interval = tonumber(interval) or 30
   if interval < 1 then interval = 1 end
 
+  -- current_version parameter is now optional (kept for backwards compatibility)
   local watcher_state = {
     package = package_name,
     current_version = current_version,
-    latest_version = current_version,
+    latest_version = nil,
     update_available = false,
     last_error = nil,
     last_check = nil,
@@ -246,15 +318,14 @@ function composer.create_update_checker(package_name, current_version, interval)
 
   local function loop()
     while true do
-      local result = composer.check(package_name, watcher_state.current_version)
+      local result = composer.check(package_name)
       watcher_state.last_check = os.epoch("utc")
       if not result.ok then
         watcher_state.last_error = result.error
       else
         watcher_state.last_error = nil
-        if result.version then
-          watcher_state.latest_version = result.version
-        end
+        watcher_state.current_version = result.installed_version or watcher_state.current_version
+        watcher_state.latest_version = result.latest_version
         watcher_state.update_available = result.update_available or false
       end
       sleep(interval)

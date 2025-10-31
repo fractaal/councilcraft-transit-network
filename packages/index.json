@@ -1,5 +1,8 @@
 {
   "packages": {
+    "composer": {
+      "manifest": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/packages/composer.json"
+    },
     "transit": {
       "manifest": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/packages/transit.json"
     },

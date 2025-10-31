@@ -41,7 +41,8 @@ local function print_usage()
   print("  install <package>  - install or update a package")
   print("  update <package>   - alias for install")
   print("  list               - show installed packages")
-  print("  check <package> <current_version> - check for updates")
+  print("  available          - show all available packages")
+  print("  check <package>    - check installed vs latest version")
 end
 
 if #tArgs == 0 then
@@ -80,23 +81,52 @@ elseif cmd == "list" then
   for _, info in ipairs(packages) do
     print(string.format("  %s (%s)", info.name, info.version or "unknown"))
   end
-elseif cmd == "check" then
-  local pkg = tArgs[2]
-  local current = tArgs[3]
-  if not pkg or not current then
-    print("composer: usage: composer check <package> <current_version>")
+elseif cmd == "available" then
+  local packages, err = composer.available()
+  if not packages then
+    print("composer: failed to fetch available packages - " .. tostring(err))
     return
   end
-  local result = composer.check(pkg, current)
+  if #packages == 0 then
+    print("No packages available in index.")
+    return
+  end
+  print("Available packages:")
+  for _, info in ipairs(packages) do
+    if info.installed then
+      print(string.format("  %s (installed: %s)", info.name, info.installed_version or "unknown"))
+    else
+      print(string.format("  %s", info.name))
+    end
+  end
+elseif cmd == "check" then
+  local pkg = tArgs[2]
+  if not pkg then
+    print("composer: usage: composer check <package>")
+    return
+  end
+  local result = composer.check(pkg)
   if not result.ok then
     print("composer: check failed - " .. tostring(result.error))
     return
   end
-  print(string.format("Latest: %s", tostring(result.version or "unknown")))
-  if result.update_available then
-    print("Update available")
+
+  print(string.format("Package: %s", pkg))
+  if result.installed_version then
+    print(string.format("  Installed: %s", result.installed_version))
   else
-    print("Already up to date")
+    print("  Installed: (not installed)")
+  end
+  print(string.format("  Latest:    %s", result.latest_version or "unknown"))
+
+  if result.update_available then
+    if result.installed_version then
+      print("  Status:    Update available")
+    else
+      print("  Status:    Not installed")
+    end
+  else
+    print("  Status:    Up to date")
   end
 else
   print("composer: unknown command '" .. cmd .. "'")
