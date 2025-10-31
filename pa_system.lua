@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.0a-internal-scheme-and-pause-primitives"
+local VERSION = "0.2.1-persistent-pa-edittitle-handle-guards"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -210,11 +210,13 @@ local function print_help()
   goto <index> - jump to track by index
   add <url> - add track to playlist
   addpause [seconds] - add pause between tracks
+  edittitle <index> "title" - edit track title
   remove <index> - remove track from playlist
   move <from> <to> - reorder tracks
   volume [0.0-3.0] - get/set playback volume
   update - install latest version via composer
   pa "msg" [url] - broadcast PA announcement
+  clearpa - clear persistent PA text
   reload - reload state from disk
   setapi <url> - update API base URL
   clear - clear log window]]
@@ -435,6 +437,13 @@ local function init()
     state.current_index = saved_state.current_index or 1
     state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
     state.volume = saved_state.volume or 1.0
+
+    -- Restore persistent PA text if it exists
+    if saved_state.persistent_pa_text and saved_state.persistent_pa_text ~= "" then
+      state.marquee_text = saved_state.persistent_pa_text
+      state.pa_active = true
+      log("INFO", "Restored PA text: " .. saved_state.persistent_pa_text)
+    end
   else
     -- Stations get API base from controller broadcasts
     state.controller_api_base = DEFAULT_API_BASE
@@ -472,6 +481,15 @@ local function init()
   log("INFO", "Role: " .. role .. "  Group: " .. group_id)
   if role == "controller" then
     log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
+
+    -- Broadcast persistent PA text to stations if it exists
+    if state.pa_active and state.marquee_text then
+      broadcast({
+        type = "pa_begin",
+        marquee_text = state.marquee_text,
+        audio_url = nil,  -- No audio on restore
+      })
+    end
   end
   log("INFO", "Type 'help' for command list.")
   sync_update_state()
@@ -488,6 +506,7 @@ local function persist_pa_state()
       current_index = state.current_index,
       api_base_url = state.controller_api_base,
       volume = state.volume,
+      persistent_pa_text = state.marquee_text,  -- Save PA text for reboot persistence
     }
   else
     -- Stations only persist volume
@@ -704,6 +723,11 @@ local function clear_marquee()
   state.marquee_text = nil
   state.marquee_rows_state["pa"] = nil
   os.queueEvent("render_ui")
+
+  -- Clear persistent PA text
+  if role == "controller" then
+    persist_pa_state()
+  end
 end
 
 local function resolve_audio_url(url)
@@ -743,9 +767,17 @@ local function request_stream(kind, url, context)
     -- Handle internal file directly
     log("INFO", string.format("Opening internal file (%s): %s", kind, resolved.path))
 
-    local file_handle = fs.open(resolved.path, "rb")
-    if not file_handle then
+    local ok, file_handle = pcall(fs.open, resolved.path, "rb")
+    if not ok or not file_handle then
       log("ERROR", "Failed to open internal file: " .. resolved.path)
+      audio_state.status = "idle"
+      return
+    end
+
+    -- Validate handle has required methods
+    if not file_handle.read or not file_handle.close then
+      log("ERROR", "Invalid file handle for: " .. resolved.path)
+      pcall(function() file_handle.close() end)
       audio_state.status = "idle"
       return
     end
@@ -753,7 +785,17 @@ local function request_stream(kind, url, context)
     -- Set up audio state for streaming from local file
     audio_state.handle = file_handle
     audio_state.status = "streaming"
-    audio_state.start = file_handle.read(4)  -- Read DFPWM header
+
+    -- Safely read DFPWM header
+    local header_ok, header = pcall(function() return file_handle.read(4) end)
+    if not header_ok or not header then
+      log("ERROR", "Failed to read DFPWM header from: " .. resolved.path)
+      pcall(function() file_handle.close() end)
+      audio_state.status = "idle"
+      return
+    end
+
+    audio_state.start = header
     audio_state.chunk_size = 16 * 1024 - 4
     audio_state.consecutive_failures = 0
     audio_state.decoder = require("cc.audio.dfpwm").make_decoder()
@@ -1064,6 +1106,11 @@ local function begin_pa(marquee_text, audio_url)
   schedule_marquee()
   os.queueEvent("render_ui")
 
+  -- Persist PA text so it survives reboots
+  if role == "controller" then
+    persist_pa_state()
+  end
+
   log("INFO", "Broadcasting PA: " .. marquee_text)
 
   if has_audio then
@@ -1222,8 +1269,8 @@ local function audioLoop()
       -- Check for graceful stop request
       if audio_state.stop_requested then
         -- Graceful cleanup at chunk boundary
-        if audio_state.handle.close then
-          audio_state.handle.close()
+        if audio_state.handle and audio_state.handle.close then
+          pcall(function() audio_state.handle.close() end)
         end
         audio_state.handle = nil
         audio_state.decoder = nil
@@ -1249,9 +1296,16 @@ local function audioLoop()
         log("INFO", "Audio playback halted gracefully")
         os.queueEvent("audio_update")  -- Wake up any waiting threads
       else
-        local chunk = audio_state.handle.read(audio_state.chunk_size)
-        if not chunk then
-          audio_state.handle.close()
+        -- Guard against invalid handle
+        local ok, chunk = pcall(function()
+          return audio_state.handle and audio_state.handle.read and audio_state.handle.read(audio_state.chunk_size)
+        end)
+
+        if not ok or not chunk then
+          -- Handle read failed or reached end of stream
+          if audio_state.handle and audio_state.handle.close then
+            pcall(function() audio_state.handle.close() end)
+          end
           audio_state.handle = nil
           audio_state.decoder = nil  -- Clear decoder after stream completes
           if audio_state.mode == "music" then
@@ -1700,6 +1754,14 @@ local function handle_command(line)
         end
       end
     end
+  elseif cmd == "clearpa" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can clear PA announcements")
+    else
+      broadcast({ type = "pa_end" })
+      clear_marquee()
+      log("INFO", "PA text cleared")
+    end
   elseif cmd == "add" then
     if role ~= "controller" then
       log("WARN", "Only controller can modify playlist")
@@ -1725,6 +1787,28 @@ local function handle_command(line)
       table.insert(state.playlist, entry)
       persist_pa_state()
       log("INFO", string.format("Added pause entry #%d: %d seconds", #state.playlist, duration))
+    end
+  elseif cmd == "edittitle" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can modify playlist")
+    elseif rest == "" then
+      log("WARN", 'Usage: edittitle <index> "new title"')
+    else
+      local index, title = rest:match('^(%d+)%s+"(.-)"$')
+      index = tonumber(index)
+      if not index or not title or index < 1 or index > #state.playlist then
+        log("WARN", string.format('Usage: edittitle <index> "new title". Valid indices: 1-%d', #state.playlist))
+      else
+        local entry = state.playlist[index]
+        if entry.type == "pause" then
+          log("WARN", "Cannot edit title of pause entry")
+        else
+          local old_title = entry.title or entry.url or "(untitled)"
+          entry.title = title
+          persist_pa_state()
+          log("INFO", string.format('Updated track #%d: "%s" -> "%s"', index, old_title, title))
+        end
+      end
     end
   elseif cmd == "remove" then
     if role ~= "controller" then
