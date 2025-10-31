@@ -1,15 +1,31 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createReadStream, createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { YtDlp } from "ytdlp-nodejs";
+import { Storage } from "@google-cloud/storage";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FFMPEG_PATH = join(__dirname, "bin", "ffmpeg");
 
 const API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD";
+
+// Local cache mode for development (set USE_LOCAL_CACHE=true or NODE_ENV=development)
+const USE_LOCAL_CACHE = process.env.USE_LOCAL_CACHE === "true" || process.env.NODE_ENV === "development";
+const LOCAL_CACHE_DIR = join(__dirname, "cache");
+const CACHE_BUCKET = process.env.CACHE_BUCKET || process.env.GCLOUD_PROJECT + ".appspot.com";
+const CACHE_PREFIX = "dfpwm_cache/";
+
 const ytDlp = new YtDlp({ ffmpegPath: FFMPEG_PATH });
+const storage = USE_LOCAL_CACHE ? null : new Storage();
+
+// Ensure local cache directory exists
+if (USE_LOCAL_CACHE && !existsSync(LOCAL_CACHE_DIR)) {
+  mkdirSync(LOCAL_CACHE_DIR, { recursive: true });
+}
 const ffmpegArgs = [
   "-loglevel",
   "error",
@@ -89,6 +105,27 @@ function resolveReadable(streamHandle) {
   return null;
 }
 
+function getCacheKey(trackUrl) {
+  const hash = createHash("sha256").update(trackUrl).digest("hex");
+  if (USE_LOCAL_CACHE) {
+    return join(LOCAL_CACHE_DIR, `${hash}.dfpwm`);
+  }
+  return `${CACHE_PREFIX}${hash}.dfpwm`;
+}
+
+// Local filesystem cache helpers
+async function checkLocalCache(cacheKey) {
+  return existsSync(cacheKey);
+}
+
+function createLocalCacheReadStream(cacheKey) {
+  return createReadStream(cacheKey);
+}
+
+function createLocalCacheWriteStream(cacheKey) {
+  return createWriteStream(cacheKey);
+}
+
 export const paStream = onRequest(
   { memory: "1024MiB", maxInstances: 2, timeoutSeconds: 540 },
   async (req, res) => {
@@ -127,6 +164,52 @@ export const paStream = onRequest(
 
     await installationReady;
 
+    // Check cache first
+    const cacheKey = getCacheKey(trackUrl);
+
+    try {
+      let exists = false;
+      if (USE_LOCAL_CACHE) {
+        exists = await checkLocalCache(cacheKey);
+      } else {
+        const bucket = storage.bucket(CACHE_BUCKET);
+        const cacheFile = bucket.file(cacheKey);
+        [exists] = await cacheFile.exists();
+      }
+
+      if (exists) {
+        log("INFO", "cache_hit", { requestId, trackUrl, cacheKey, mode: USE_LOCAL_CACHE ? "local" : "cloud" });
+        res.setHeader("Content-Type", "audio/dfpwm");
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        res.setHeader("X-Cache", "HIT");
+
+        const cacheStream = USE_LOCAL_CACHE
+          ? createLocalCacheReadStream(cacheKey)
+          : storage.bucket(CACHE_BUCKET).file(cacheKey).createReadStream();
+
+        let bytesSent = 0;
+        cacheStream.on("data", (chunk) => {
+          bytesSent += chunk.length;
+        });
+        cacheStream.on("end", () => {
+          log("INFO", "cache_stream_completed", { requestId, trackUrl, bytesSent });
+        });
+        cacheStream.on("error", (error) => {
+          log("ERROR", "cache_stream_failed", { requestId, error: error.message });
+          if (!res.headersSent) {
+            res.status(500).send("Cache read failed");
+          }
+        });
+        cacheStream.pipe(res);
+        return;
+      }
+    } catch (error) {
+      log("WARN", "cache_check_failed", { requestId, error: error.message });
+      // Continue to transcode on cache errors
+    }
+
+    log("INFO", "cache_miss", { requestId, trackUrl, cacheKey, mode: USE_LOCAL_CACHE ? "local" : "cloud" });
+
     let downloadHandle;
     try {
       downloadHandle = ytDlp.stream(trackUrl, {
@@ -160,6 +243,32 @@ export const paStream = onRequest(
 
     res.setHeader("Content-Type", "audio/dfpwm");
     res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Cache", "MISS");
+
+    // Create PassThrough stream to split output to client and cache
+    const passThrough = new PassThrough();
+    const cacheWriteStream = USE_LOCAL_CACHE
+      ? createLocalCacheWriteStream(cacheKey)
+      : storage.bucket(CACHE_BUCKET).file(cacheKey).createWriteStream({
+          metadata: {
+            contentType: "audio/dfpwm",
+            metadata: {
+              trackUrl,
+              createdAt: new Date().toISOString(),
+            },
+          },
+        });
+
+    let cacheUploadFailed = false;
+    cacheWriteStream.on("error", (error) => {
+      cacheUploadFailed = true;
+      log("WARN", "cache_upload_failed", { requestId, error: error.message, mode: USE_LOCAL_CACHE ? "local" : "cloud" });
+    });
+    cacheWriteStream.on("finish", () => {
+      if (!cacheUploadFailed) {
+        log("INFO", "cache_upload_completed", { requestId, trackUrl, cacheKey, mode: USE_LOCAL_CACHE ? "local" : "cloud" });
+      }
+    });
 
     let cleanedUp = false;
     const cleanup = (error) => {
@@ -195,6 +304,8 @@ export const paStream = onRequest(
         });
       }
       readable.destroy?.();
+      passThrough.destroy();
+      cacheWriteStream.destroy();
       if (!ffmpeg.killed) {
         ffmpeg.stdin.destroy();
         ffmpeg.stdout.destroy();
@@ -223,7 +334,11 @@ export const paStream = onRequest(
     ffmpeg.stdout.on("data", (chunk) => {
       bytesSent += chunk.length;
     });
-    ffmpeg.stdout.pipe(res);
+
+    // Split output to both client and cache
+    ffmpeg.stdout.pipe(passThrough);
+    passThrough.pipe(res);
+    passThrough.pipe(cacheWriteStream);
 
     ffmpeg.on("close", (code) => {
       if (code !== 0) {

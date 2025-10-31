@@ -1,12 +1,15 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.1.0"
+local VERSION = "0.1.1-pa-fixes"
 local CHANNEL = 143
 
 local DEFAULT_API_BASE = "https://example-pa-endpoint.run.app"
 local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
 local CHIME_URL = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/SG_MRT_BELL.dfpwm"
+
+local MONITOR_TEXT_SCALE = 1.5
+local MARQUEE_MIN_GAP = 6
 
 local CONFIG_PATH = "/.pa_config"
 local STATE_PATH = "/.pa_state"
@@ -20,7 +23,7 @@ local state = {
   now_playing = nil,
   pa_active = false,
   marquee_text = nil,
-  marquee_offset = 0,
+  marquee_rows_state = {},
   playlist = nil,
   loop_mode = "repeat_all",
   current_index = 1,
@@ -32,9 +35,9 @@ local state = {
   elapsed_seconds = 0,
   track_duration = 0,
   playback_start_time = nil,
+  volume = 1.0,  -- Volume multiplier (0.0 to 3.0)
+  pa_resume_context = nil,
 }
-
-local decoder = require("cc.audio.dfpwm").make_decoder()
 
 local speakers = {}
 local monitors = {}
@@ -48,6 +51,13 @@ local audio_state = {
   chunk_size = nil,
   queue = {},
   consecutive_failures = 0,
+  decoder = nil,       -- DFPWM decoder instance (reset per stream)
+  stop_requested = false,  -- Flag for graceful stop at next chunk
+  active_speakers = {},
+  flush_pending = nil,
+  flush_remaining = 0,
+  flush_mode = nil,
+  flush_timeout = nil,
 }
 
 local pending_requests = {}
@@ -175,9 +185,10 @@ local function print_help()
   stop - stop playback
   next - skip to next track
   goto <index> - jump to track by index
-  add <url> [title] - add track to playlist
+  add <url> - add track to playlist
   remove <index> - remove track from playlist
   move <from> <to> - reorder tracks
+  volume [0.0-3.0] - get/set playback volume
   pa "msg" [url] - broadcast PA announcement
   reload - reload state from disk
   setapi <url> - update API base URL
@@ -186,6 +197,7 @@ local function print_help()
     help_text = [[Available commands:
   help - show this help
   status - display current state
+  volume [0.0-3.0] - get/set playback volume
   clear - clear log window]]
   end
   log("INFO", help_text)
@@ -359,7 +371,7 @@ local function refresh_peripherals()
   end
 
   for _, monitor in ipairs({ peripheral.find("monitor") }) do
-    monitor.setTextScale(0.5)
+    monitor.setTextScale(MONITOR_TEXT_SCALE)
     table.insert(monitors, monitor)
   end
 
@@ -380,9 +392,18 @@ local function init()
     state.loop_mode = saved_state.loop_mode or "repeat_all"
     state.current_index = saved_state.current_index or 1
     state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
+    state.volume = saved_state.volume or 1.0
   else
     -- Stations get API base from controller broadcasts
     state.controller_api_base = DEFAULT_API_BASE
+
+    -- Load volume if saved
+    if fs.exists(STATE_PATH) then
+      local saved_state = load_table(STATE_PATH)
+      if saved_state then
+        state.volume = saved_state.volume or 1.0
+      end
+    end
   end
 
   local prev = term.redirect(base_term)
@@ -414,16 +435,24 @@ local function init()
 end
 
 local function persist_pa_state()
-  if role ~= "controller" then
-    return
+  local now = {}
+
+  if role == "controller" then
+    now = {
+      group_id = group_id,
+      playlist = state.playlist,
+      loop_mode = state.loop_mode,
+      current_index = state.current_index,
+      api_base_url = state.controller_api_base,
+      volume = state.volume,
+    }
+  else
+    -- Stations only persist volume
+    now = {
+      volume = state.volume,
+    }
   end
-  local now = {
-    group_id = group_id,
-    playlist = state.playlist,
-    loop_mode = state.loop_mode,
-    current_index = state.current_index,
-    api_base_url = state.controller_api_base,
-  }
+
   save_table(STATE_PATH, now)
 end
 
@@ -445,61 +474,130 @@ local function reload_state()
   os.queueEvent("render_ui")
 end
 
+local marquee_rows_config = {
+  {
+    id = "now_playing",
+    color = colors.cyan,
+    build = function(ctx)
+      local now = ctx.state.now_playing
+      if not now then
+        return nil
+      end
+      local title = now.title or now.url or "(unknown)"
+      local artist = now.artist
+      if artist and artist ~= "" then
+        return string.format("NOW PLAYING: %s — %s", title, artist)
+      end
+      return string.format("NOW PLAYING: %s", title)
+    end,
+  },
+  {
+    id = "pa",
+    color = colors.orange,
+    build = function(ctx)
+      local message = ctx.state.marquee_text
+      if ctx.state.pa_active and message and message ~= "" then
+        return string.format("PA: %s", message)
+      end
+    end,
+  },
+}
+
+local function collect_marquee_rows()
+  local ctx = { state = state }
+  local rows = {}
+
+  for _, config in ipairs(marquee_rows_config) do
+    local text = config.build(ctx)
+    local row_id = config.id
+    if text and text ~= "" then
+      local row_state = state.marquee_rows_state[row_id]
+      if not row_state then
+        row_state = { id = row_id, offset = 0, segment = nil, scroll_length = 0 }
+      end
+      if row_state.text ~= text or not row_state.segment then
+        row_state.offset = 0
+        row_state.segment = text .. string.rep(" ", MARQUEE_MIN_GAP)
+        row_state.scroll_length = #row_state.segment
+      end
+      row_state.text = text
+      row_state.color = config.color or colors.white
+      row_state.active_scroll = false
+
+      state.marquee_rows_state[row_id] = row_state
+      table.insert(rows, row_state)
+    else
+      state.marquee_rows_state[row_id] = nil
+    end
+  end
+
+  return rows
+end
+
 local function render_monitors()
   if #monitors == 0 then
     return
   end
 
-  local lines = {}
-  table.insert(lines, "PA Group: " .. group_id)
-  if role == "controller" then
-    table.insert(lines, "Mode: Controller")
-  else
-    table.insert(lines, "Mode: Station")
+  local rows = collect_marquee_rows()
+  for _, row in ipairs(rows) do
+    row.active_scroll = false
   end
 
-  if state.now_playing then
-    local title = state.now_playing.title or "Unknown Title"
-    local artist = state.now_playing.artist or ""
-    if artist ~= "" then
-      table.insert(lines, "Now Playing:")
-      table.insert(lines, "  " .. title)
-      table.insert(lines, "  " .. artist)
-    else
-      table.insert(lines, "Now Playing: " .. title)
-    end
-  else
-    table.insert(lines, "Now Playing: (idle)")
-  end
-
-  if role == "station" then
-    if state.controller_present then
-      table.insert(lines, "Controller: online")
-    else
-      table.insert(lines, "Controller: missing")
-    end
-  end
+  local global_scroll = false
 
   for _, monitor in ipairs(monitors) do
     monitor.setBackgroundColor(colors.black)
     monitor.setTextColor(colors.white)
     monitor.clear()
-    monitor.setCursorPos(1, 1)
-    for _, text in ipairs(lines) do
-      monitor.write(text)
-      local x, y = monitor.getCursorPos()
-      monitor.setCursorPos(1, y + 1)
+
+    local width, height = monitor.getSize()
+    local line_y = 1
+
+    for _, row in ipairs(rows) do
+      if line_y > height then
+        break
+      end
+
+      local display
+      local text = row.text or ""
+      if #text > width and row.scroll_length and row.scroll_length > 0 then
+        local segment = row.segment
+        local buffer = segment .. segment
+        while #buffer < row.scroll_length + width do
+          buffer = buffer .. segment
+        end
+        local offset = row.offset % row.scroll_length
+        display = buffer:sub(offset + 1, offset + width)
+        if #display < width then
+          display = display .. buffer:sub(1, width - #display)
+        end
+        row.active_scroll = true
+        global_scroll = true
+      else
+        display = text
+        if #display < width then
+          display = display .. string.rep(" ", width - #display)
+        end
+      end
+
+      monitor.setCursorPos(1, line_y)
+      monitor.clearLine()
+      monitor.setTextColor(row.color or colors.white)
+      monitor.write(display)
+      line_y = line_y + 1
     end
 
-    if state.pa_active and state.marquee_text then
-      local width = select(1, monitor.getSize())
-      local padded = state.marquee_text .. string.rep(" ", width)
-      local pos = (state.marquee_offset % #padded) + 1
-      local slice = padded:sub(pos, pos + width - 1)
-      monitor.setCursorPos(1, select(2, monitor.getCursorPos()))
-      monitor.setTextColor(colors.orange)
-      monitor.write(slice)
+    monitor.setTextColor(colors.white)
+  end
+
+  if global_scroll then
+    if not marquee_timer then
+      marquee_timer = os.startTimer(0.25)
     end
+  elseif marquee_timer then
+    os.cancelTimer(marquee_timer)
+    marquee_timer = nil
   end
 end
 
@@ -535,49 +633,32 @@ local function update_elapsed_time()
 end
 
 local function stop_audio()
-  local was_active = (audio_state.status == "streaming" or audio_state.status == "waiting") and audio_state.mode ~= nil
+  -- Request graceful stop at next chunk boundary (don't tear down immediately)
+  if audio_state.status == "streaming" or audio_state.status == "waiting" then
+    audio_state.stop_requested = true
+    log("INFO", "Audio stop requested (will complete at next chunk)")
 
-  audio_state.status = "idle"
-  audio_state.mode = nil
-  audio_state.url = nil
-  audio_state.queue = {}
-  audio_state.start = nil
-  audio_state.chunk_size = nil
-  if audio_state.handle then
-    audio_state.handle.close()
-    audio_state.handle = nil
-  end
-  for _, speaker in ipairs(speakers) do
-    speaker.stop()
-  end
-  for url, ctx in pairs(pending_requests) do
-    if ctx.kind == "music" or ctx.kind == "pa" then
-      pending_requests[url] = nil
+    -- Cancel any pending HTTP requests
+    for url, ctx in pairs(pending_requests) do
+      if ctx.kind == "music" or ctx.kind == "pa" then
+        pending_requests[url] = nil
+      end
     end
-  end
 
-  stop_time_tracker()
-
-  if was_active then
-    log("INFO", "Audio playback halted")
+    stop_time_tracker()
   end
 end
 
 local function schedule_marquee()
-  if marquee_timer then
-    os.cancelTimer(marquee_timer)
+  if not marquee_timer then
+    marquee_timer = os.startTimer(0.1)
   end
-  marquee_timer = os.startTimer(0.1)
 end
 
 local function clear_marquee()
   state.pa_active = false
   state.marquee_text = nil
-  state.marquee_offset = 0
-  if marquee_timer then
-    os.cancelTimer(marquee_timer)
-    marquee_timer = nil
-  end
+  state.marquee_rows_state["pa"] = nil
   os.queueEvent("render_ui")
 end
 
@@ -609,6 +690,19 @@ local function broadcast(message)
   modem.transmit(CHANNEL, CHANNEL, message)
 end
 
+local function snapshot_current_track()
+  if not state.now_playing or not state.now_playing.url then
+    return nil
+  end
+
+  return {
+    url = state.now_playing.url,
+    title = state.now_playing.title,
+    artist = state.now_playing.artist,
+    duration = state.track_duration,
+  }
+end
+
 local function start_music_stream(entry)
   state.now_playing = {
     url = entry.url,
@@ -618,6 +712,7 @@ local function start_music_stream(entry)
   state.track_duration = entry.duration or 0
   state.paused = false
   os.queueEvent("render_ui")
+  schedule_marquee()
 
   if entry.title then
     log("INFO", string.format("Starting track: %s (%s)", entry.title, entry.url or ""))
@@ -638,9 +733,17 @@ local function start_music_stream(entry)
 
   if #speakers > 0 then
     stop_audio()
+
+    -- Wait for audio to actually stop before starting new stream
+    while audio_state.status ~= "idle" do
+      os.pullEvent("audio_update")
+    end
+
+    audio_state.active_speakers = {}
     audio_state.mode = "music"
     audio_state.status = "waiting"
     audio_state.url = stream_url
+    audio_state.stop_requested = false  -- Clear any pending stop for new stream
     request_stream("music", stream_url, { label = "music" })
   end
 end
@@ -660,8 +763,12 @@ local function advance_playlist()
     entry = state.playlist[state.current_index]
   end
 
+  -- Only request info if we don't already have it and no request pending
   if not entry.title or not entry.artist then
-    request_info(entry.url, state.current_index)
+    local info_url = build_api_url("/info", entry.url)
+    if not pending_requests[info_url] then
+      request_info(entry.url, state.current_index)
+    end
   end
 
   start_music_stream(entry)
@@ -712,11 +819,24 @@ local function stop_music()
   stop_audio()
 end
 
+local start_next_audio_in_queue
+
 local function queue_pa_sequence(audio_url)
+  if not audio_url or audio_url == "" then
+    return
+  end
+
   stop_audio()
+
+  -- Wait for audio to actually stop before starting PA sequence
+  while audio_state.status ~= "idle" do
+    os.pullEvent("audio_update")
+  end
+
   audio_state.mode = "pa"
   audio_state.status = "waiting"
   audio_state.queue = {}
+  audio_state.stop_requested = false  -- Clear any pending stop for new PA sequence
   table.insert(audio_state.queue, { label = "chime", url = CHIME_URL })
   if audio_url and audio_url ~= "" then
     table.insert(audio_state.queue, { label = "announcement", url = audio_url })
@@ -724,32 +844,110 @@ local function queue_pa_sequence(audio_url)
   start_next_audio_in_queue()
 end
 
+local function resume_music_after_pa()
+  local context = state.pa_resume_context
+  state.pa_resume_context = nil
+
+  if not context or not context.entry then
+    return
+  end
+
+  if context.should_resume then
+    start_music_stream(context.entry)
+  elseif context.was_paused then
+    state.paused = true
+    state.now_playing = {
+      url = context.entry.url,
+      title = context.entry.title,
+      artist = context.entry.artist,
+    }
+    state.track_duration = context.entry.duration or 0
+    os.queueEvent("render_ui")
+  end
+end
+
+local function pause_music()
+  if state.paused then
+    return false, "Playback already paused"
+  end
+  if not state.now_playing or not state.now_playing.url then
+    return false, "Nothing is playing to pause"
+  end
+
+  state.paused = true
+  broadcast({
+    type = "music_pause",
+    track_url = state.now_playing.url,
+    title = state.now_playing.title,
+    artist = state.now_playing.artist,
+    duration = state.track_duration,
+  })
+  stop_audio()
+  os.queueEvent("render_ui")
+  return true, "Playback paused"
+end
+
+local function resume_paused_track()
+  if not state.paused then
+    return false, "Playback is not paused"
+  end
+
+  local entry = snapshot_current_track()
+  if not entry then
+    state.paused = false
+    return false, "No track available to resume"
+  end
+
+  start_music_stream(entry)
+  return true, "Playback resumed"
+end
+
 local function begin_pa(marquee_text, audio_url)
+  local has_audio = audio_url and audio_url ~= ""
+
+  if has_audio then
+    local resume_entry = snapshot_current_track()
+    state.pa_resume_context = nil
+    if resume_entry then
+      state.pa_resume_context = {
+        entry = resume_entry,
+        should_resume = not state.paused,
+        was_paused = state.paused,
+      }
+    end
+  else
+    state.pa_resume_context = nil
+  end
+
   state.pa_active = true
   state.marquee_text = marquee_text
-  state.marquee_offset = 0
   schedule_marquee()
   os.queueEvent("render_ui")
 
   log("INFO", "Broadcasting PA: " .. marquee_text)
 
-  stop_music()
+  if has_audio then
+    local ok = pause_music()
+    if not ok and state.pa_resume_context then
+      -- Failed to pause (probably nothing playing); drop resume context
+      state.pa_resume_context = nil
+    end
+  end
+
   broadcast({
     type = "pa_begin",
     marquee_text = marquee_text,
     audio_url = audio_url,
   })
 
-  if #speakers > 0 then
+  if has_audio and #speakers > 0 then
     queue_pa_sequence(audio_url)
   end
 end
 
-local function end_pa()
-  broadcast({ type = "pa_end" })
-  clear_marquee()
-  log("INFO", "PA sequence complete; resuming music")
-  advance_playlist()
+local function complete_pa_audio()
+  log("INFO", "PA audio sequence complete")
+  resume_music_after_pa()
 end
 
 local function uiLoop()
@@ -761,8 +959,18 @@ local function uiLoop()
     elseif name == "timer" then
       local timer_id = event[2]
       if marquee_timer and timer_id == marquee_timer then
-        if state.pa_active and state.marquee_text then
-          state.marquee_offset = state.marquee_offset + 1
+        local any_scroll = false
+        local rows_state = state.marquee_rows_state
+        if rows_state then
+          for _, row in pairs(rows_state) do
+            if row.active_scroll and row.scroll_length and row.scroll_length > 0 then
+              row.offset = (row.offset + 1) % row.scroll_length
+              any_scroll = true
+            end
+          end
+        end
+
+        if any_scroll then
           render_monitors()
           marquee_timer = os.startTimer(0.1)
         else
@@ -783,7 +991,7 @@ local function uiLoop()
   end
 end
 
-local function start_next_audio_in_queue()
+start_next_audio_in_queue = function()
   if audio_state.status ~= "waiting" then
     return
   end
@@ -808,48 +1016,163 @@ local function play_buffer(buffer)
     return
   end
 
+  -- Clamp volume to valid range (0.0 to 3.0)
+  local volume = math.max(0, math.min(3, state.volume or 1.0))
+
   local tasks = {}
   for i, speaker in ipairs(speakers) do
     tasks[i] = function()
       local name = peripheral.getName(speaker)
-      while not speaker.playAudio(buffer, 3) do
+      while not speaker.playAudio(buffer, volume) do
         local event, dev = os.pullEvent("speaker_audio_empty")
         if event == "speaker_audio_empty" and dev == name then
           -- wait until speaker ready
         end
       end
+      audio_state.active_speakers[name] = true
     end
   end
   pcall(parallel.waitForAll, table.unpack(tasks))
 end
 
+local function start_speaker_flush(mode)
+  if not audio_state.active_speakers then
+    audio_state.active_speakers = {}
+  end
+
+  local pending = {}
+  local count = 0
+  for name in pairs(audio_state.active_speakers) do
+    pending[name] = true
+    count = count + 1
+  end
+
+  if count == 0 then
+    return false
+  end
+
+  audio_state.status = "flushing"
+  audio_state.flush_mode = mode
+  audio_state.flush_pending = pending
+  audio_state.flush_remaining = count
+  audio_state.flush_timeout = os.startTimer(0.5)
+  return true
+end
+
+local function finalize_speaker_flush()
+  local mode = audio_state.flush_mode
+
+  audio_state.flush_pending = nil
+  audio_state.flush_remaining = 0
+  audio_state.flush_mode = nil
+  audio_state.flush_timeout = nil
+  audio_state.active_speakers = {}
+
+  audio_state.status = "idle"
+  audio_state.mode = nil
+
+  if mode == "music" then
+    os.queueEvent("music_stream_complete")
+  end
+end
+
 local function audioLoop()
   while true do
-    if audio_state.status == "streaming" and audio_state.handle then
-      local chunk = audio_state.handle.read(audio_state.chunk_size)
-      if not chunk then
-        audio_state.handle.close()
+    if audio_state.status == "streaming" and audio_state.handle and audio_state.decoder then
+      -- Check for graceful stop request
+      if audio_state.stop_requested then
+        -- Graceful cleanup at chunk boundary
+        if audio_state.handle.close then
+          audio_state.handle.close()
+        end
         audio_state.handle = nil
-        if audio_state.mode == "music" then
-          audio_state.status = "idle"
-          os.queueEvent("music_stream_complete")
-        elseif audio_state.mode == "pa" then
-          audio_state.status = "waiting"
-          start_next_audio_in_queue()
-        else
-          audio_state.status = "idle"
+        audio_state.decoder = nil
+        audio_state.status = "idle"
+        local old_mode = audio_state.mode
+        audio_state.mode = nil
+        audio_state.url = nil
+        audio_state.queue = {}
+        audio_state.start = nil
+        audio_state.chunk_size = nil
+        audio_state.stop_requested = false
+        audio_state.active_speakers = {}
+        audio_state.flush_pending = nil
+        audio_state.flush_remaining = 0
+        audio_state.flush_mode = nil
+        audio_state.flush_timeout = nil
+
+        -- Stop speakers
+        for _, speaker in ipairs(speakers) do
+          speaker.stop()
         end
+
+        log("INFO", "Audio playback halted gracefully")
+        os.queueEvent("audio_update")  -- Wake up any waiting threads
       else
-        if audio_state.start then
-          chunk = audio_state.start .. chunk
-          audio_state.start = nil
-          audio_state.chunk_size = audio_state.chunk_size + 4
+        local chunk = audio_state.handle.read(audio_state.chunk_size)
+        if not chunk then
+          audio_state.handle.close()
+          audio_state.handle = nil
+          audio_state.decoder = nil  -- Clear decoder after stream completes
+          if audio_state.mode == "music" then
+            -- Wait for speakers to finish draining before advancing playlist
+            if not start_speaker_flush("music") then
+              audio_state.status = "idle"
+              audio_state.mode = nil
+              audio_state.active_speakers = {}
+              audio_state.flush_pending = nil
+              audio_state.flush_remaining = 0
+              audio_state.flush_mode = nil
+              audio_state.flush_timeout = nil
+              os.queueEvent("music_stream_complete")
+            end
+          elseif audio_state.mode == "pa" then
+            audio_state.status = "waiting"
+            start_next_audio_in_queue()
+          else
+            audio_state.status = "idle"
+          end
+        else
+          if audio_state.start then
+            chunk = audio_state.start .. chunk
+            audio_state.start = nil
+            audio_state.chunk_size = audio_state.chunk_size + 4
+          end
+
+          local buffer = audio_state.decoder(chunk)
+          play_buffer(buffer)
         end
-        local buffer = decoder(chunk)
-        play_buffer(buffer)
       end
     else
-      os.pullEvent("audio_update")
+      if audio_state.status == "flushing" then
+        while audio_state.status == "flushing" do
+          local event = { os.pullEvent() }
+          local name = event[1]
+          if name == "speaker_audio_empty" then
+            local device = event[2]
+            if audio_state.flush_pending and device and audio_state.flush_pending[device] then
+              audio_state.flush_pending[device] = nil
+              audio_state.flush_remaining = audio_state.flush_remaining - 1
+              if audio_state.flush_remaining <= 0 then
+                finalize_speaker_flush()
+              end
+            end
+          elseif name == "timer" then
+            local timer_id = event[2]
+            if audio_state.flush_timeout and timer_id == audio_state.flush_timeout then
+              finalize_speaker_flush()
+            else
+              os.queueEvent(name, table.unpack(event, 2))
+              os.sleep(0)
+            end
+          else
+            os.queueEvent(name, table.unpack(event, 2))
+            os.sleep(0)
+          end
+        end
+      else
+        os.pullEvent("audio_update")
+      end
     end
   end
 end
@@ -860,7 +1183,7 @@ end
 
 local function handle_pa_complete()
   if audio_state.mode == "pa" and #audio_state.queue == 0 and audio_state.status ~= "streaming" then
-    end_pa()
+    complete_pa_audio()
   end
 end
 
@@ -872,7 +1195,9 @@ local function handle_station_music_start(message)
   }
   state.controller_present = true
   state.controller_last_seen = os.epoch("utc")
+  state.paused = false
   os.queueEvent("render_ui")
+  schedule_marquee()
 
   log("INFO", string.format("Controller started track: %s (%s) stream=%s", message.title or message.track_url or "(unknown)", message.track_url or "", message.stream_url or ""))
 
@@ -881,38 +1206,74 @@ local function handle_station_music_start(message)
   end
 
   stop_audio()
+
+  -- Wait for audio to actually stop before starting new stream
+  while audio_state.status ~= "idle" do
+    os.pullEvent("audio_update")
+  end
+
+  audio_state.active_speakers = {}
   audio_state.mode = "music"
   audio_state.status = "waiting"
   audio_state.url = message.stream_url
+  audio_state.stop_requested = false  -- Clear any pending stop for new stream
   request_stream("music", message.stream_url, { label = "music" })
 end
 
 local function handle_station_music_stop()
   stop_audio()
   state.now_playing = nil
+  state.paused = false
   os.queueEvent("render_ui")
   log("INFO", "Controller stopped music")
+end
+
+local function handle_station_music_pause(message)
+  state.paused = true
+  stop_audio()
+
+  if message and message.track_url then
+    state.now_playing = {
+      url = message.track_url,
+      title = message.title,
+      artist = message.artist,
+    }
+    state.track_duration = message.duration or state.track_duration
+  end
+
+  os.queueEvent("render_ui")
+  log("INFO", "Controller paused music")
 end
 
 local function handle_station_pa_begin(message)
   state.pa_active = true
   state.marquee_text = message.marquee_text
-  state.marquee_offset = 0
   schedule_marquee()
   os.queueEvent("render_ui")
 
   log("INFO", "PA received: " .. message.marquee_text)
 
-  stop_audio()
+  local has_audio = message.audio_url and message.audio_url ~= ""
+  if has_audio then
+    stop_audio()
+
   if #speakers > 0 then
+    -- Wait for audio to actually stop before starting PA sequence
+    while audio_state.status ~= "idle" do
+      os.pullEvent("audio_update")
+    end
+
+    audio_state.active_speakers = {}
     audio_state.mode = "pa"
     audio_state.status = "waiting"
     audio_state.queue = {}
+    audio_state.stop_requested = false  -- Clear any pending stop
     table.insert(audio_state.queue, { label = "chime", url = CHIME_URL })
     if message.audio_url and message.audio_url ~= "" then
       table.insert(audio_state.queue, { label = "announcement", url = message.audio_url })
     end
     start_next_audio_in_queue()
+  end
   end
 end
 
@@ -948,6 +1309,15 @@ local function networkLoop()
       elseif message.type == "music_stop" then
         if role == "station" then
           handle_station_music_stop()
+        else
+          state.paused = false
+        end
+      elseif message.type == "music_pause" then
+        if role == "station" then
+          handle_station_music_pause(message)
+        else
+          state.paused = true
+          os.queueEvent("render_ui")
         end
       elseif message.type == "pa_begin" then
         if role == "station" then
@@ -980,6 +1350,7 @@ local function controller_broadcast_loop()
       controller_id = state.controller_id,
       now_playing = state.now_playing,
       pa_active = state.pa_active,
+      paused = state.paused,
     }
     broadcast(payload)
     os.sleep(1)
@@ -1074,11 +1445,13 @@ local function handle_command(line)
     end
   elseif cmd == "play" then
     if role == "controller" then
-      if state.paused and state.now_playing then
-        state.paused = false
-        start_time_tracker()
-        log("INFO", "Playback resumed")
-        os.queueEvent("render_ui")
+      if state.paused then
+        local ok, message = resume_paused_track()
+        if ok then
+          log("INFO", message)
+        else
+          log("WARN", message)
+        end
       else
         start_current_track()
       end
@@ -1087,13 +1460,11 @@ local function handle_command(line)
     end
   elseif cmd == "pause" then
     if role == "controller" then
-      if state.now_playing and audio_state.status == "streaming" and not state.paused then
-        state.paused = true
-        stop_time_tracker()
-        log("INFO", "Playback paused")
-        os.queueEvent("render_ui")
+      local ok, message = pause_music()
+      if ok then
+        log("INFO", message)
       else
-        log("WARN", "Nothing is playing to pause")
+        log("WARN", message)
       end
     else
       log("WARN", "Only controller can pause playback")
@@ -1161,19 +1532,16 @@ local function handle_command(line)
     if role ~= "controller" then
       log("WARN", "Only controller can modify playlist")
     elseif rest == "" then
-      log("WARN", "Usage: add <url> [title]")
+      log("WARN", "Usage: add <url>")
     else
-      local url, title = rest:match("^(%S+)%s*(.*)$")
-      if not url or url == "" then
+      local track_url = rest:match("^%s*(.-)%s*$")  -- trim whitespace
+      if not track_url or track_url == "" then
         log("WARN", "Invalid URL")
       else
-        local entry = { url = url }
-        if title and title ~= "" then
-          entry.title = title
-        end
+        local entry = { url = track_url }
         table.insert(state.playlist, entry)
         persist_pa_state()
-        log("INFO", string.format("Added track #%d: %s", #state.playlist, title or url))
+        log("INFO", string.format("Added track #%d: %s", #state.playlist, track_url))
       end
     end
   elseif cmd == "remove" then
@@ -1207,6 +1575,19 @@ local function handle_command(line)
       state.controller_api_base = rest
       persist_pa_state()
       log("INFO", "API base updated to " .. rest)
+    end
+  elseif cmd == "volume" then
+    if rest == "" then
+      log("INFO", string.format("Current volume: %.1f (0.0-3.0)", state.volume))
+    else
+      local vol = tonumber(rest)
+      if not vol then
+        log("WARN", "Usage: volume <number> (0.0-3.0)")
+      else
+        state.volume = math.max(0, math.min(3, vol))
+        persist_pa_state()
+        log("INFO", string.format("Volume set to %.1f", state.volume))
+      end
     end
   elseif cmd == "clear" then
     log_lines = {}
@@ -1337,6 +1718,8 @@ local function httpLoop()
           audio_state.start = handle.read(4)
           audio_state.chunk_size = 16 * 1024 - 4
           audio_state.consecutive_failures = 0
+          -- Create new decoder for this stream
+          audio_state.decoder = require("cc.audio.dfpwm").make_decoder()
           if request.kind == "music" then
             start_time_tracker()
           end
@@ -1371,7 +1754,7 @@ local function httpLoop()
               os.queueEvent("render_ui")
             elseif request.kind == "pa" then
               if role == "controller" then
-                end_pa()
+                complete_pa_audio()
               else
                 clear_marquee()
               end
@@ -1380,14 +1763,14 @@ local function httpLoop()
             stop_audio()
             if request.kind == "music" then
               if role == "controller" then
-                advance_playlist()
+                os.queueEvent("music_stream_complete")  -- Let supervisorLoop handle it async
               else
                 state.now_playing = nil
                 os.queueEvent("render_ui")
               end
             elseif request.kind == "pa" then
               if role == "controller" then
-                end_pa()
+                complete_pa_audio()
               else
                 clear_marquee()
               end
@@ -1406,7 +1789,7 @@ local function supervisorLoop()
     if name == "music_stream_complete" and role == "controller" then
       handle_music_complete()
     elseif name == "pa_sequence_complete" and role == "controller" then
-      end_pa()
+      complete_pa_audio()
     elseif name == "timer" then
       -- timers handled elsewhere
     end
@@ -1414,7 +1797,7 @@ local function supervisorLoop()
 end
 
 local function controller_main()
-  advance_playlist()
+  -- Don't auto-play on startup - let user start playback manually
   parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop)
 end
 

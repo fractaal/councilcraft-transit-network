@@ -5,6 +5,7 @@ node_modules/
 *.log
 .env.local
 .env.*.local
+cache/
 
 # Editor directories
 .vscode/
