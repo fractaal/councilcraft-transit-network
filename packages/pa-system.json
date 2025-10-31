@@ -1,6 +1,6 @@
 {
   "name": "pa-system",
-  "version": "0.1.3-forward-ref-fix",
+  "version": "0.1.3b-forward-ref-fix-and-remove-pa-prefix",
   "description": "CouncilCraft PA & Entertainment System controller/station software.",
   "files": [
     {

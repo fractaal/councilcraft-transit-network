@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.1.3-forward-ref-fix"
+local VERSION = "0.1.3b-forward-ref-fix-and-remove-pa-prefix"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -537,7 +537,7 @@ local marquee_rows_config = {
     build = function(ctx)
       local message = ctx.state.marquee_text
       if ctx.state.pa_active and message and message ~= "" then
-        return string.format("PA: %s", message)
+        return message
       end
     end,
   },
