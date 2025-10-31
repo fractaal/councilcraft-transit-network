@@ -1506,13 +1506,14 @@ local function runStation(config)
     end
 
     -- Display status on monitor (if available)
-    local shared.mon = config.has_display and display.getOutput() or nil
-    local shared.anim_frame = 0
+    shared.mon = config.has_display and display.getOutput() or nil
+    shared.anim_frame = 0
     local function displayStationStatus()
         if not shared.mon then return end
 
+        local mon = shared.mon
         display.clear(mon, colors.black)
-        local w, h = shared.mon.getSize()
+        local w, h = mon.getSize()
 
         -- Minimal maintenance screen: station ID + closed message only
         if shared.state == "SHUTDOWN" then
@@ -1530,15 +1531,15 @@ local function runStation(config)
         display.centerText(mon, 3, string.rep("-", w - 4), colors.gray, colors.black)
 
         -- Line info with colored badge
-        shared.mon.setCursorPos(2, 5)
-        shared.mon.setTextColor(colors.black)
-        shared.mon.setBackgroundColor(colors.cyan)
-        shared.mon.write(" " .. string.upper(config.line_id) .. " ")
-        shared.mon.setBackgroundColor(colors.black)
+        mon.setCursorPos(2, 5)
+        mon.setTextColor(colors.black)
+        mon.setBackgroundColor(colors.cyan)
+        mon.write(" " .. string.upper(config.line_id) .. " ")
+        mon.setBackgroundColor(colors.black)
 
-        shared.mon.setCursorPos(2, 6)
-        shared.mon.setTextColor(colors.lightGray)
-        shared.mon.write("Station: " .. config.station_id)
+        mon.setCursorPos(2, 6)
+        mon.setTextColor(colors.lightGray)
+        mon.write("Station: " .. config.station_id)
 
         -- State icon and status with animations
         local statusIcon
@@ -1584,13 +1585,13 @@ local function runStation(config)
             secondaryAnim = anim.getSpinner(shared.anim_frame, 2)  -- Dot loader
         end
 
-        shared.mon.setCursorPos(2, 9)
-        shared.mon.setTextColor(colors.gray)
-        shared.mon.write("STATUS:")
+        mon.setCursorPos(2, 9)
+        mon.setTextColor(colors.gray)
+        mon.write("STATUS:")
 
-        shared.mon.setCursorPos(2, 10)
-        shared.mon.setTextColor(statusColor)
-        shared.mon.write(statusIcon .. " " .. statusText)
+        mon.setCursorPos(2, 10)
+        mon.setTextColor(statusColor)
+        mon.write(statusIcon .. " " .. statusText)
 
         -- Animated secondary indicator
         if shouldAnimate or shared.state == "DEPARTING" then
@@ -1599,21 +1600,21 @@ local function runStation(config)
 
         -- Maintenance message (only shown in SHUTDOWN state)
         if shared.state == "SHUTDOWN" then
-            shared.mon.setCursorPos(2, 13)
-            shared.mon.setTextColor(colors.red)
-            shared.mon.write("MRT UNDER MAINTENANCE")
+            mon.setCursorPos(2, 13)
+            mon.setTextColor(colors.red)
+            mon.write("MRT UNDER MAINTENANCE")
 
-            shared.mon.setCursorPos(2, 15)
-            shared.mon.setTextColor(colors.gray)
-            shared.mon.write("The Ministry of Science")
-            shared.mon.setCursorPos(2, 16)
-            shared.mon.write("and Technology apologizes")
-            shared.mon.setCursorPos(2, 17)
-            shared.mon.write("for the inconvenience and")
-            shared.mon.setCursorPos(2, 18)
-            shared.mon.write("thanks you for your")
-            shared.mon.setCursorPos(2, 19)
-            shared.mon.write("continued patronage.")
+            mon.setCursorPos(2, 15)
+            mon.setTextColor(colors.gray)
+            mon.write("The Ministry of Science")
+            mon.setCursorPos(2, 16)
+            mon.write("and Technology apologizes")
+            mon.setCursorPos(2, 17)
+            mon.write("for the inconvenience and")
+            mon.setCursorPos(2, 18)
+            mon.write("thanks you for your")
+            mon.setCursorPos(2, 19)
+            mon.write("continued patronage.")
         end
 
         -- Trip timing status with real-time monitoring
@@ -1645,50 +1646,50 @@ local function runStation(config)
                 displayColor = colors.gray
             end
 
-            shared.mon.setCursorPos(2, 13)
-            shared.mon.setTextColor(colors.gray)
-            shared.mon.write("TIMING:")
+            mon.setCursorPos(2, 13)
+            mon.setTextColor(colors.gray)
+            mon.write("TIMING:")
 
-            shared.mon.setCursorPos(2, 14)
-            shared.mon.setTextColor(displayColor)
+            mon.setCursorPos(2, 14)
+            mon.setTextColor(displayColor)
             local to3 = { ["ON TIME"] = "ONT", ["EARLY"] = "EAR", ["DELAYED"] = "DLY" }
             local display3 = to3[displayStatus] or displayStatus
-            shared.mon.write(timingIcon .. " " .. display3)
+            mon.write(timingIcon .. " " .. display3)
 
             -- Show real-time trip progress
             if shared.state == "IN_TRANSIT" and current_duration then
                 local eta = avg - current_duration
-                shared.mon.setCursorPos(2, 15)
-                shared.mon.setTextColor(displayColor)
-                shared.mon.write("Arriving in " .. string.format("%.0f", math.max(0, eta)) .. "s")
+                mon.setCursorPos(2, 15)
+                mon.setTextColor(displayColor)
+                mon.write("Arriving in " .. string.format("%.0f", math.max(0, eta)) .. "s")
 
                 -- Show current vs average with color coding
-                shared.mon.setCursorPos(2, 16)
-                shared.mon.setTextColor(colors.gray)
-                shared.mon.write("Trip: ")
-                shared.mon.setTextColor(displayColor)
-                shared.mon.write(string.format("%.0f", current_duration) .. "s")
-                shared.mon.setTextColor(colors.gray)
-                shared.mon.write(" / ")
-                shared.mon.setTextColor(colors.lightGray)
-                shared.mon.write(string.format("%.0f", avg) .. "s")
+                mon.setCursorPos(2, 16)
+                mon.setTextColor(colors.gray)
+                mon.write("Trip: ")
+                mon.setTextColor(displayColor)
+                mon.write(string.format("%.0f", current_duration) .. "s")
+                mon.setTextColor(colors.gray)
+                mon.write(" / ")
+                mon.setTextColor(colors.lightGray)
+                mon.write(string.format("%.0f", avg) .. "s")
             else
                 -- Show average with progress bar when not in transit
                 if #shared.trip_history > 0 then
-                    shared.mon.setCursorPos(2, 15)
-                    shared.mon.setTextColor(colors.gray)
-                    shared.mon.write("Avg: " .. string.format("%.1f", avg) .. "s")
+                    mon.setCursorPos(2, 15)
+                    mon.setTextColor(colors.gray)
+                    mon.write("Avg: " .. string.format("%.1f", avg) .. "s")
 
                     -- Visual history indicator
                     local barWidth = math.min(w - 4, 20)
                     local progress = #shared.trip_history / config.trip_history_size
                     local bar = anim.progressBar(progress, barWidth, "=", "-")
-                    shared.mon.setCursorPos(2, 16)
-                    shared.mon.setTextColor(colors.blue)
-                    shared.mon.write("[" .. bar .. "]")
-                    shared.mon.setCursorPos(w - 8, 16)
-                    shared.mon.setTextColor(colors.gray)
-                    shared.mon.write(#shared.trip_history .. "/" .. config.trip_history_size)
+                    mon.setCursorPos(2, 16)
+                    mon.setTextColor(colors.blue)
+                    mon.write("[" .. bar .. "]")
+                    mon.setCursorPos(w - 8, 16)
+                    mon.setTextColor(colors.gray)
+                    mon.write(#shared.trip_history .. "/" .. config.trip_history_size)
                 end
             end
         end
