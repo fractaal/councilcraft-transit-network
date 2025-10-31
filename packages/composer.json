@@ -1,6 +1,6 @@
 {
   "name": "composer",
-  "version": "0.2.0-improved-commands",
+  "version": "0.2.1-add-uninstall",
   "description": "CouncilCraft Composer - Lightweight package manager for distributing ComputerCraft software from GitHub.",
   "files": [
     {

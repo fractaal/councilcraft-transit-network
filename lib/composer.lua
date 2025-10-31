@@ -228,6 +228,35 @@ function composer.update(package_name)
   return composer.install(package_name)
 end
 
+function composer.uninstall(package_name)
+  local installed = state.packages[package_name]
+  if not installed then
+    return false, "Package '" .. package_name .. "' is not installed"
+  end
+
+  -- Delete files
+  if installed.files and type(installed.files) == "table" then
+    for _, file in ipairs(installed.files) do
+      if file.path and fs.exists(file.path) then
+        fs.delete(file.path)
+      end
+    end
+  end
+
+  -- Delete startup stub
+  if installed.startup and installed.startup.path then
+    if fs.exists(installed.startup.path) then
+      fs.delete(installed.startup.path)
+    end
+  end
+
+  -- Remove from state
+  state.packages[package_name] = nil
+  save_state()
+
+  return true
+end
+
 function composer.check(package_name)
   local index, err = load_index()
   if not index then

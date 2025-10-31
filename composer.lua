@@ -40,6 +40,8 @@ local function print_usage()
   print("Commands:")
   print("  install <package>  - install or update a package")
   print("  update <package>   - alias for install")
+  print("  remove <package>   - uninstall a package")
+  print("  uninstall <pkg>    - alias for remove")
   print("  list               - show installed packages")
   print("  available          - show all available packages")
   print("  check <package>    - check installed vs latest version")
@@ -69,6 +71,22 @@ if cmd == "install" or cmd == "update" then
     print("failed")
     if result then
       print("  " .. tostring(result))
+    end
+  end
+elseif cmd == "remove" or cmd == "uninstall" then
+  local pkg = tArgs[2]
+  if not pkg then
+    print("composer: package name required")
+    return
+  end
+  write(string.format("Removing '%s'... ", pkg))
+  local ok, err = composer.uninstall(pkg)
+  if ok then
+    print("done")
+  else
+    print("failed")
+    if err then
+      print("  " .. tostring(err))
     end
   end
 elseif cmd == "list" then
