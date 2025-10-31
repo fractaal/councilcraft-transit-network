@@ -8,3 +8,8 @@ node_modules
 functions/cache/
 
 *Zone.Identifier
+
+processed/
+uploads/
+
+*.db

@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Display Network - Upload Portal</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        h3 {
+            color: #333;
+            margin: 20px 0 10px 0;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .auth-section {
+            margin-bottom: 30px;
+        }
+
+        .main-section {
+            display: none;
+        }
+
+        .main-section.active {
+            display: block;
+        }
+
+        input, select, textarea, button {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+
+        button.secondary {
+            background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: -9999px;
+        }
+
+        .file-input-label {
+            display: block;
+            padding: 12px;
+            border: 2px dashed #667eea;
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: #667eea;
+            font-weight: 500;
+        }
+
+        .file-input-label:hover {
+            background: #f5f5ff;
+            border-color: #764ba2;
+        }
+
+        .file-input-label.has-file {
+            border-style: solid;
+            background: #f5f5ff;
+        }
+
+        .preview {
+            margin: 15px 0;
+            border-radius: 6px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .preview.active {
+            display: block;
+        }
+
+        .preview img {
+            width: 100%;
+            height: auto;
+            max-height: 300px;
+            object-fit: contain;
+            background: #f5f5f5;
+        }
+
+        .message {
+            padding: 12px;
+            border-radius: 6px;
+            margin: 10px 0;
+            display: none;
+        }
+
+        .message.active {
+            display: block;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .collections-list {
+            margin: 15px 0;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+        }
+
+        .collection-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: #f8f9fa;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .collection-item:hover {
+            background: #e9ecef;
+        }
+
+        .collection-item.selected {
+            background: #667eea;
+            color: white;
+        }
+
+        .new-collection-form {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .new-collection-form input {
+            flex: 1;
+            margin: 0;
+        }
+
+        .new-collection-form button {
+            flex: 0 0 auto;
+            width: auto;
+            padding: 12px 24px;
+            margin: 0;
+        }
+
+        .resolution-info {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-size: 13px;
+            color: #004085;
+        }
+
+        .images-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .image-card {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+            transition: transform 0.2s;
+        }
+
+        .image-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .image-card img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            cursor: pointer;
+        }
+
+        .image-card-info {
+            padding: 10px;
+            background: #f8f9fa;
+        }
+
+        .image-card-caption {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 8px;
+            min-height: 20px;
+            word-wrap: break-word;
+        }
+
+        .image-card-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .image-card-actions button {
+            flex: 1;
+            padding: 6px;
+            font-size: 12px;
+            margin: 0;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 500px;
+            width: 100%;
+            padding: 30px;
+        }
+
+        .modal-image {
+            max-width: 100%;
+            max-height: 400px;
+            object-fit: contain;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .modal-close {
+            background: #6b7280;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            float: right;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            border-bottom-color: #667eea;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ Display Network</h1>
+        <p class="subtitle">Upload images for ComputerCraft monitors</p>
+
+        <!-- Auth Section -->
+        <div class="auth-section" id="authSection">
+            <input type="password" id="passcodeInput" placeholder="Enter passcode" />
+            <button onclick="authenticate()">Enter</button>
+            <div class="message error" id="authError"></div>
+        </div>
+
+        <!-- Main Section -->
+        <div class="main-section" id="mainSection">
+            <!-- Tabs -->
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('upload')">Upload</div>
+                <div class="tab" onclick="switchTab('manage')">Manage Images</div>
+            </div>
+
+            <!-- Upload Tab -->
+            <div class="tab-content active" id="uploadTab">
+                <h3>Select Collection</h3>
+                <div class="collections-list" id="collectionsList"></div>
+
+                <div class="new-collection-form">
+                    <input type="text" id="newCollectionName" placeholder="New collection name" />
+                    <button onclick="createCollection()">Create</button>
+                </div>
+
+                <div class="message success" id="collectionMessage"></div>
+
+                <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
+
+                <h3>Upload Image</h3>
+                <div class="resolution-info">
+                    📐 Standard portrait: 156x242 (4x6 monitors @ 0.5 scale)
+                </div>
+
+                <div class="file-input-wrapper">
+                    <input type="file" id="imageFile" accept="image/*" onchange="previewImage(this)" />
+                    <label for="imageFile" class="file-input-label" id="fileLabel">
+                        📁 Click to select image
+                    </label>
+                </div>
+
+                <div class="preview" id="preview">
+                    <img id="previewImg" alt="Preview" />
+                </div>
+
+                <input type="text" id="caption" placeholder="Caption (optional)" />
+
+                <button onclick="uploadImage()" id="uploadBtn" disabled>Upload & Process</button>
+                <div class="message" id="uploadMessage"></div>
+            </div>
+
+            <!-- Manage Tab -->
+            <div class="tab-content" id="manageTab">
+                <h3>Collection Images</h3>
+                <p style="color: #666; margin-bottom: 10px;">Select a collection from the Upload tab first</p>
+                <div class="images-grid" id="imagesGrid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Caption Modal -->
+    <div class="modal" id="editModal">
+        <div class="modal-content">
+            <h3>Edit Caption</h3>
+            <input type="text" id="editCaption" placeholder="New caption" />
+            <button onclick="saveCaption()">Save</button>
+            <button class="secondary" onclick="closeModal()">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Image Preview Modal -->
+    <div class="modal" id="previewModal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closePreviewModal()">✕</button>
+            <img id="previewModalImg" class="modal-image" alt="Full size" />
+            <p id="previewModalCaption" style="margin-top: 10px; color: #666;"></p>
+        </div>
+    </div>
+
+    <script>
+        let passcode = null;
+        let selectedCollectionId = null;
+        let editingImageId = null;
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+
+            if (tab === 'upload') {
+                document.querySelector('.tab:nth-child(1)').classList.add('active');
+                document.getElementById('uploadTab').classList.add('active');
+            } else {
+                document.querySelector('.tab:nth-child(2)').classList.add('active');
+                document.getElementById('manageTab').classList.add('active');
+                if (selectedCollectionId) loadImages();
+            }
+        }
+
+        async function authenticate() {
+            const input = document.getElementById('passcodeInput');
+            const errorDiv = document.getElementById('authError');
+            passcode = input.value;
+
+            try {
+                const response = await fetch('/api/collections', {
+                    headers: { 'X-Passcode': passcode }
+                });
+
+                if (response.ok) {
+                    document.getElementById('authSection').style.display = 'none';
+                    document.getElementById('mainSection').classList.add('active');
+                    loadCollections();
+                } else {
+                    errorDiv.textContent = 'Invalid passcode';
+                    errorDiv.classList.add('active');
+                }
+            } catch (err) {
+                errorDiv.textContent = 'Connection error';
+                errorDiv.classList.add('active');
+            }
+        }
+
+        async function loadCollections() {
+            try {
+                const response = await fetch('/api/collections', {
+                    headers: { 'X-Passcode': passcode }
+                });
+                const collections = await response.json();
+
+                const list = document.getElementById('collectionsList');
+                list.innerHTML = collections.map(c => `
+                    <div class="collection-item" onclick="selectCollection(${c.id}, this)">
+                        <strong>${c.name}</strong> (${c.image_count} images)
+                    </div>
+                `).join('') || '<p style="color: #999;">No collections yet</p>';
+            } catch (err) {
+                console.error('Failed to load collections:', err);
+            }
+        }
+
+        function selectCollection(id, element) {
+            document.querySelectorAll('.collection-item').forEach(el => {
+                el.classList.remove('selected');
+            });
+            element.classList.add('selected');
+            selectedCollectionId = id;
+            updateUploadButton();
+        }
+
+        async function createCollection() {
+            const input = document.getElementById('newCollectionName');
+            const name = input.value.trim();
+            const msgDiv = document.getElementById('collectionMessage');
+
+            if (!name) return;
+
+            try {
+                const response = await fetch('/api/collections', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Passcode': passcode
+                    },
+                    body: JSON.stringify({ name })
+                });
+
+                if (response.ok) {
+                    input.value = '';
+                    msgDiv.textContent = `Collection "${name}" created!`;
+                    msgDiv.classList.add('active');
+                    setTimeout(() => msgDiv.classList.remove('active'), 3000);
+                    loadCollections();
+                } else {
+                    const data = await response.json();
+                    alert(data.error || 'Failed to create collection');
+                }
+            } catch (err) {
+                alert('Connection error');
+            }
+        }
+
+        function previewImage(input) {
+            const label = document.getElementById('fileLabel');
+            const preview = document.getElementById('preview');
+            const previewImg = document.getElementById('previewImg');
+
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    previewImg.src = e.target.result;
+                    preview.classList.add('active');
+                };
+                reader.readAsDataURL(input.files[0]);
+
+                label.textContent = `✓ ${input.files[0].name}`;
+                label.classList.add('has-file');
+            }
+
+            updateUploadButton();
+        }
+
+        function updateUploadButton() {
+            const fileInput = document.getElementById('imageFile');
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = !(fileInput.files.length > 0 && selectedCollectionId);
+        }
+
+        async function uploadImage() {
+            const fileInput = document.getElementById('imageFile');
+            const caption = document.getElementById('caption').value;
+            const msgDiv = document.getElementById('uploadMessage');
+            const uploadBtn = document.getElementById('uploadBtn');
+
+            if (!fileInput.files[0] || !selectedCollectionId) return;
+
+            const formData = new FormData();
+            formData.append('image', fileInput.files[0]);
+            formData.append('collection_id', selectedCollectionId);
+            formData.append('caption', caption);
+            formData.append('width', 156);
+            formData.append('height', 242);
+
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Processing...';
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    headers: { 'X-Passcode': passcode },
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    msgDiv.textContent = '✓ Image uploaded and processed successfully!';
+                    msgDiv.className = 'message success active';
+
+                    fileInput.value = '';
+                    document.getElementById('caption').value = '';
+                    document.getElementById('fileLabel').textContent = '📁 Click to select image';
+                    document.getElementById('fileLabel').classList.remove('has-file');
+                    document.getElementById('preview').classList.remove('active');
+
+                    loadCollections();
+                } else {
+                    msgDiv.textContent = `Error: ${data.error}`;
+                    msgDiv.className = 'message error active';
+                }
+            } catch (err) {
+                msgDiv.textContent = 'Upload failed: ' + err.message;
+                msgDiv.className = 'message error active';
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload & Process';
+                setTimeout(() => msgDiv.classList.remove('active'), 5000);
+            }
+        }
+
+        async function loadImages() {
+            if (!selectedCollectionId) return;
+
+            try {
+                const response = await fetch(`/api/collections/${selectedCollectionId}/images`, {
+                    headers: { 'X-Passcode': passcode }
+                });
+                const images = await response.json();
+
+                const grid = document.getElementById('imagesGrid');
+                if (images.length === 0) {
+                    grid.innerHTML = '<p style="color: #999;">No images in this collection yet</p>';
+                    return;
+                }
+
+                grid.innerHTML = images.map(img => `
+                    <div class="image-card">
+                        <img src="/uploads/${img.stored_filename}"
+                             alt="${img.caption || 'Image'}"
+                             onclick="showPreview(${img.id}, '${img.stored_filename}', '${(img.caption || '').replace(/'/g, "\\'")}')">
+                        <div class="image-card-info">
+                            <div class="image-card-caption">${img.caption || '<em>No caption</em>'}</div>
+                            <div class="image-card-actions">
+                                <button class="secondary" onclick="editCaption(${img.id}, '${(img.caption || '').replace(/'/g, "\\'")}')">Edit</button>
+                                <button class="danger" onclick="deleteImage(${img.id})">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load images:', err);
+            }
+        }
+
+        function editCaption(imageId, currentCaption) {
+            editingImageId = imageId;
+            document.getElementById('editCaption').value = currentCaption;
+            document.getElementById('editModal').classList.add('active');
+        }
+
+        async function saveCaption() {
+            const newCaption = document.getElementById('editCaption').value;
+
+            try {
+                const response = await fetch(`/api/images/${editingImageId}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Passcode': passcode
+                    },
+                    body: JSON.stringify({ caption: newCaption })
+                });
+
+                if (response.ok) {
+                    closeModal();
+                    loadImages();
+                    loadCollections();
+                } else {
+                    alert('Failed to update caption');
+                }
+            } catch (err) {
+                alert('Connection error');
+            }
+        }
+
+        async function deleteImage(imageId) {
+            if (!confirm('Are you sure you want to delete this image?')) return;
+
+            try {
+                const response = await fetch(`/api/images/${imageId}`, {
+                    method: 'DELETE',
+                    headers: { 'X-Passcode': passcode }
+                });
+
+                if (response.ok) {
+                    loadImages();
+                    loadCollections();
+                } else {
+                    alert('Failed to delete image');
+                }
+            } catch (err) {
+                alert('Connection error');
+            }
+        }
+
+        function showPreview(id, filename, caption) {
+            document.getElementById('previewModalImg').src = `/uploads/${filename}`;
+            document.getElementById('previewModalCaption').textContent = caption || 'No caption';
+            document.getElementById('previewModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('active');
+        }
+
+        function closePreviewModal() {
+            document.getElementById('previewModal').classList.remove('active');
+        }
+
+        document.getElementById('passcodeInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') authenticate();
+        });
+    </script>
+</body>
+</html>

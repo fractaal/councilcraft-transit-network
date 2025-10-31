@@ -1,0 +1,15 @@
+{
+  "name": "display-network",
+  "version": "1.1.0",
+  "description": "Digital signage system for ComputerCraft monitors with web-based image management",
+  "files": [
+    {
+      "path": "/display.lua",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/display-network/display.lua"
+    },
+    {
+      "path": "/startup.lua",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/display-network/startup.lua"
+    }
+  ]
+}

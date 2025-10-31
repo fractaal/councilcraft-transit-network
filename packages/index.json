@@ -8,6 +8,9 @@
     },
     "pa-system": {
       "manifest": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/packages/pa-system.json"
+    },
+    "display-network": {
+      "manifest": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/packages/display-network.json"
     }
   }
 }
