@@ -6,20 +6,8 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.11.1"
-local DESCRIPTOR="non-blocking-audio-parallel-loops"
-
-if not package.path:find("/lib/%.%?%.lua", 1, true) then
-    package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
-end
-
-local composer
-do
-    local ok, mod = pcall(require, "composer")
-    if ok then
-        composer = mod
-    end
-end
+local VERSION = "v0.10.14"
+local DESCRIPTOR="update-announcements-sequences"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -1047,142 +1035,6 @@ function audio.playDoorClosingChirpNoteblock(speaker)
 end
 
 -- ============================================================================
--- AUDIO QUEUE SYSTEM (Non-Blocking)
--- ============================================================================
-
-audio.queue = {}
-audio.current_request = nil
-
--- Queue an audio request (non-blocking)
-function audio.queueSound(sound_type, station_id)
-    table.insert(audio.queue, {type = sound_type, station_id = station_id})
-    os.queueEvent("audio_requested")
-end
-
--- Non-blocking DFPWM playback (uses speaker_audio_empty event)
-function audio.playDFPWMNonBlocking(speaker, dfpwm_data, volume)
-    if not speaker then return false end
-    if not dfpwm_data then return false end
-
-    -- Lazy-load the DFPWM decoder
-    if not audio.decoder then
-        local dfpwm = require("cc.audio.dfpwm")
-        audio.decoder = dfpwm.make_decoder()
-    end
-
-    -- Process audio in chunks (max 16KB DFPWM at a time)
-    local chunk_size = 16 * 1024
-    local pos = 1
-
-    while pos <= #dfpwm_data do
-        -- Extract chunk
-        local chunk_end = math.min(pos + chunk_size - 1, #dfpwm_data)
-        local chunk = dfpwm_data:sub(pos, chunk_end)
-
-        -- Decode DFPWM chunk to PCM
-        local pcm_audio = audio.decoder(chunk)
-
-        -- Try to play this chunk (non-blocking!)
-        while not speaker.playAudio(pcm_audio, volume or 1.0) do
-            -- Wait for speaker buffer to have space
-            os.pullEvent("speaker_audio_empty")
-        end
-
-        pos = pos + chunk_size
-    end
-
-    return true
-end
-
--- Non-blocking sequence playback (uses events between sounds)
-function audio.playSequenceNonBlocking(speaker, sequence_name, station_id)
-    if not speaker then return false end
-
-    -- Determine which sequence to use
-    local sequence = nil
-    if sequence_name == "arrival" then
-        local sequence_key = nil
-        if station_id then
-            for friendly_name, seq_key in pairs(audio.station_map) do
-                if string.find(station_id, friendly_name, 1, true) then
-                    sequence_key = seq_key
-                    print("[AUDIO] Station '" .. station_id .. "' contains '" .. friendly_name .. "' → sequence '" .. sequence_key .. "'")
-                    break
-                end
-            end
-            if not sequence_key then
-                print("[AUDIO] Station '" .. tostring(station_id) .. "' does not match any mapping, using fallback")
-            end
-        else
-            print("[AUDIO] No station_id provided, using fallback")
-        end
-
-        if sequence_key and audio.sequences[sequence_key] then
-            sequence = audio.sequences[sequence_key]
-        else
-            sequence = audio.sequences._FALLBACK
-        end
-    elseif sequence_name == "departure" then
-        sequence = audio.sequences._DEPARTURE
-    elseif sequence_name == "maintenance" then
-        sequence = audio.sequences._MAINTENANCE
-    else
-        return false
-    end
-
-    if not sequence then return false end
-
-    -- Play each sound in the sequence (NON-BLOCKING with speaker events)
-    for _, sound_name in ipairs(sequence) do
-        local audio_data = audio.getSound(sound_name)
-        if audio_data then
-            print("[AUDIO] Playing: " .. sound_name .. " (" .. #audio_data .. " bytes)")
-
-            -- Play sound (non-blocking!)
-            if not audio.playDFPWMNonBlocking(speaker, audio_data, 1.0) then
-                print("[AUDIO] Failed to play DFPWM: " .. sound_name)
-                return false
-            end
-
-            -- Brief pause between sounds (use timer event, not sleep!)
-            local pause_timer = os.startTimer(0.1)
-            repeat
-                local event, param1 = os.pullEvent()
-            until event == "timer" and param1 == pause_timer
-        else
-            print("[AUDIO] No data for: " .. sound_name)
-        end
-    end
-
-    print("[AUDIO] Sequence complete!")
-    return true
-end
-
--- Noteblock playback (non-blocking with timer events)
-function audio.playArrivalChimeNoteblockNonBlocking(speaker)
-    if not speaker then return end
-
-    local sequence = {
-        {audio.notes.G3, 0.3},
-        {audio.notes.D4, 0.3},
-        {audio.notes.B3, 0.3},
-        {audio.notes.G4, 0.3},
-        {audio.notes.D4, 0.6}
-    }
-
-    for _, note_data in ipairs(sequence) do
-        local pitch, duration = note_data[1], note_data[2]
-        speaker.playNote("bell", 1.0, pitch)
-
-        -- Use timer event instead of sleep
-        local timer = os.startTimer(duration)
-        repeat
-            local event, param1 = os.pullEvent()
-        until event == "timer" and param1 == timer
-    end
-end
-
--- ============================================================================
 -- PUBLIC API (with automatic fallback)
 -- ============================================================================
 
@@ -1190,22 +1042,23 @@ end
 function audio.playArrivalChime(speaker, station_id)
     if not speaker then return end
 
-    -- Try DFPWM sequence (NON-BLOCKING!)
-    if audio.playSequenceNonBlocking(speaker, "arrival", station_id) then
+    -- Try DFPWM sequence
+    if audio.playSequence(speaker, "arrival", station_id) then
         return  -- Success!
     end
 
-    -- Fallback to noteblock (NON-BLOCKING!)
-    audio.playArrivalChimeNoteblockNonBlocking(speaker)
+    -- Fallback to noteblock
+    audio.playArrivalChimeNoteblock(speaker)
 end
 
 -- Play door closing chirp: Tries DFPWM first, falls back to noteblock
+-- This should be called repeatedly in a loop until departure
 function audio.playDoorClosingChirp(speaker)
     if not speaker then return end
 
-    -- Try DFPWM departure sound (NON-BLOCKING!)
+    -- Try DFPWM departure sound
     local audio_data = audio.getSound("DEPARTURE_CART_DEPARTING")
-    if audio_data and audio.playDFPWMNonBlocking(speaker, audio_data, 0.8) then
+    if audio_data and audio.playDFPWM(speaker, audio_data, 0.8) then
         return  -- Success!
     end
 
@@ -1218,81 +1071,40 @@ end
 -- ============================================================================
 
 local function runStation(config)
-    -- Shared state between parallel functions (must be declared in outer scope)
-    local shared = {
-        state = "IN_TRANSIT",
-        cart_present = false,
-        registered = false,
-        trip_history = {},
-        trip_start_time = nil,
-        trip_status = "N/A",
-        departing_start_time = nil,
-        departure_sound_played = false,
-        last_heartbeat = 0,
-        last_status_send = 0,
-        last_display_update = 0,
-        last_state_save = 0,
-        last_modem_check = 0,
-        anim_frame = 0,
-        modem = nil,
-        speaker = nil,
-        mon = nil
-    }
-
-    if composer then
-        local result = composer.check("transit", VERSION)
-        if result.ok and result.update_available then
-            print(string.format("[UPDATE] New version available: %s (running %s)", tostring(result.version or "?"), VERSION))
-        end
-    end
-
-    -- ========================================================================
-    -- STATION AUDIO LOOP (runs in parallel with main loop)
-    -- ========================================================================
-    local function stationAudioLoop()
-        while true do
-            -- Wait for audio request event
-            local event, audio_type, station_id = os.pullEvent("play_audio")
-
-            if audio_type == "arrival" then
-                print("[AUDIO LOOP] Playing arrival chime...")
-                audio.playArrivalChime(shared.speaker, station_id)
-                print("[AUDIO LOOP] Arrival chime complete!")
-                os.queueEvent("audio_complete", "arrival")
-            elseif audio_type == "departure" then
-                print("[AUDIO LOOP] Playing departure sound...")
-                audio.playDoorClosingChirp(shared.speaker)
-                print("[AUDIO LOOP] Departure sound complete!")
-                os.queueEvent("audio_complete", "departure")
-            elseif audio_type == "maintenance" then
-                print("[AUDIO LOOP] Playing maintenance announcement...")
-                audio.playSequenceNonBlocking(shared.speaker, "maintenance", station_id)
-                print("[AUDIO LOOP] Maintenance announcement complete!")
-                os.queueEvent("audio_complete", "maintenance")
-            end
-        end
-    end
-
-    -- ========================================================================
-    -- STATION MAIN LOOP (runs in parallel with audio loop)
-    -- ========================================================================
-    local function stationMainLoop()
-    -- Load persisted shared.state if exists (for surviving reboots)
+    -- Load persisted state if exists (for surviving reboots)
     local saved_state = loadState()
 
-    -- Restore saved shared.state if available
+    -- State
+    local state = "IN_TRANSIT"  -- IN_TRANSIT, ARRIVED, BOARDING, DEPARTING, SHUTDOWN
+    local cart_present = false
+    local last_heartbeat = 0
+    local last_status_send = 0
+    local modem = nil
+    local speaker = nil  -- Auto-discovered speaker
+    local registered = false  -- Track if we've seen DISCOVER (prevents spam before registration)
+
+    -- Trip timing
+    local trip_history = {}  -- Array of trip durations in seconds
+    local trip_start_time = nil  -- When cart departed (start of current trip)
+    local trip_status = "N/A"  -- "ON TIME", "EARLY", "DELAYED", "N/A"
+
+    -- Departing state timer
+    local departing_start_time = nil
+    local departure_sound_played = false  -- Track if departure sound has been played
+
+    -- Restore saved state if available
     if saved_state then
-        shared.shared.state = saved_state.shared.state or "IN_TRANSIT"
-        shared.shared.cart_present = saved_state.shared.cart_present or false
-        shared.shared.trip_history = saved_state.shared.trip_history or {}
-        shared.shared.trip_start_time = saved_state.shared.trip_start_time
+        state = saved_state.state or "IN_TRANSIT"
+        cart_present = saved_state.cart_present or false
+        trip_history = saved_state.trip_history or {}
+        trip_start_time = saved_state.trip_start_time
 
         -- Reset transient states (ARRIVED, DEPARTING) to BOARDING on cold boot
-        if shared.shared.state == "ARRIVED" or shared.shared.state == "DEPARTING" then
-            shared.shared.state = "BOARDING"
+        if state == "ARRIVED" or state == "DEPARTING" then
+            state = "BOARDING"
         end
 
-        print("Restored state: " .. shared.state)
+        print("Restored state: " .. state)
     end
 
     -- Setup
@@ -1307,12 +1119,12 @@ local function runStation(config)
     print("")
     if MODEM_DEBUG then print("Opening modem...") end
 
-    shared.modem = network.openModem(config.network_channel, config.modem_side)
+    modem = network.openModem(config.network_channel, config.modem_side)
     if MODEM_DEBUG then print("Modem opened on channel " .. config.network_channel) end
 
     -- Auto-discover speaker
-    shared.speaker = peripheral.find("speaker")
-    if shared.speaker then
+    speaker = peripheral.find("speaker")
+    if speaker then
         print("Speaker found! Audio enabled.")
     else
         print("No speaker found. Audio disabled.")
@@ -1338,12 +1150,12 @@ local function runStation(config)
 
     -- Calculate average trip time (MUST be defined before sendStatus!)
     local function getAverageTripTime()
-        if #shared.trip_history == 0 then return nil end
+        if #trip_history == 0 then return nil end
         local sum = 0
-        for _, duration in ipairs(shared.trip_history) do
+        for _, duration in ipairs(trip_history) do
             sum = sum + duration
         end
-        return sum / #shared.trip_history
+        return sum / #trip_history
     end
 
     -- Calculate trip status (ON TIME/EARLY/DELAYED)
@@ -1364,9 +1176,9 @@ local function runStation(config)
 
     -- Get current trip duration (in real-time during transit)
     local function getCurrentTripDuration()
-        if not shared.trip_start_time then return nil end
+        if not trip_start_time then return nil end
         local now = os.epoch("utc") / 1000
-        return now - shared.trip_start_time
+        return now - trip_start_time
     end
 
     -- Calculate real-time trip status (during transit)
@@ -1382,12 +1194,12 @@ local function runStation(config)
 
     -- Record trip completion
     local function recordTrip(duration)
-        table.insert(shared.trip_history, duration)
-        if #shared.trip_history > config.trip_history_size then
-            table.remove(shared.trip_history, 1)  -- Remove oldest
+        table.insert(trip_history, duration)
+        if #trip_history > config.trip_history_size then
+            table.remove(trip_history, 1)  -- Remove oldest
         end
-        shared.trip_status = calculateTripStatus(duration)
-        print("[" .. os.date("%H:%M:%S") .. "] Trip: " .. string.format("%.1f", duration) .. "s (" .. shared.trip_status .. ")")
+        trip_status = calculateTripStatus(duration)
+        print("[" .. os.date("%H:%M:%S") .. "] Trip: " .. string.format("%.1f", duration) .. "s (" .. trip_status .. ")")
     end
 
     -- Send status (uses getAverageTripTime, so must come after)
@@ -1396,29 +1208,29 @@ local function runStation(config)
         local current_status, current_duration = getCurrentTripStatus()
 
         -- Use real-time status if in transit, otherwise use last recorded
-        local status_to_send = (shared.state == "IN_TRANSIT" and current_status ~= "N/A") and current_status or shared.trip_status
+        local status_to_send = (state == "IN_TRANSIT" and current_status ~= "N/A") and current_status or trip_status
 
-        local msg = protocol.createStatus(config.station_id, shared.cart_present, status_to_send, avg, shared.state, VERSION)
+        local msg = protocol.createStatus(config.station_id, cart_present, status_to_send, avg, state, VERSION)
         -- Add current trip duration for real-time display
         msg.current_trip_duration = current_duration
 
-        network.send(shared.modem, config.network_channel, msg)
+        network.send(modem, config.network_channel, msg)
     end
 
     -- Save current state to disk (for surviving reboots)
     local function persistState()
         saveState({
-            state = shared.state,
-            cart_present = shared.cart_present,
-            trip_history = shared.trip_history,
-            trip_start_time = shared.trip_start_time
+            state = state,
+            cart_present = cart_present,
+            trip_history = trip_history,
+            trip_start_time = trip_start_time
         })
     end
 
     -- Send heartbeat
     local function sendHeartbeat()
         local msg = protocol.createHeartbeat(config.station_id)
-        network.send(shared.modem, config.network_channel, msg)
+        network.send(modem, config.network_channel, msg)
     end
 
     -- Handle discovery
@@ -1426,7 +1238,7 @@ local function runStation(config)
         print("DISCOVER received from " .. msg.from)
         print("Registering with ops center...")
 
-        shared.registered = true  -- Mark as shared.registered so we start sending STATUS/HEARTBEAT
+        registered = true  -- Mark as registered so we start sending STATUS/HEARTBEAT
 
         local registerMsg = protocol.createRegister(
             config.station_id,
@@ -1434,7 +1246,7 @@ local function runStation(config)
             config.has_display
         )
 
-        network.send(shared.modem, config.network_channel, registerMsg)
+        network.send(modem, config.network_channel, registerMsg)
         print("REGISTER sent!")
     end
 
@@ -1444,13 +1256,13 @@ local function runStation(config)
             print("DISPATCH received!")
 
             -- Allow DISPATCH to exit SHUTDOWN mode
-            if shared.state == "SHUTDOWN" then
+            if state == "SHUTDOWN" then
                 print("Exiting maintenance mode...")
             end
 
-            shared.state = "DEPARTING"
-            shared.departing_start_time = os.epoch("utc") / 1000
-            persistState()  -- Save shared.state change immediately
+            state = "DEPARTING"
+            departing_start_time = os.epoch("utc") / 1000
+            persistState()  -- Save state change immediately
             sendStatus()
         end
     end
@@ -1459,12 +1271,12 @@ local function runStation(config)
     local function handleShutdown(msg)
         if msg.target == "ALL" or msg.target == config.station_id then
             print("SHUTDOWN received! Entering maintenance mode...")
-            shared.shared.state = "SHUTDOWN"
-            persistState()  -- Save shared.state immediately (critical for reboots!)
+            state = "SHUTDOWN"
+            persistState()  -- Save state immediately (critical for reboots!)
             sendStatus()
 
-            -- Trigger maintenance announcement (NON-BLOCKING!)
-            os.queueEvent("play_audio", "maintenance", config.station_id)
+            -- Play maintenance announcement
+            audio.playSequence(speaker, "maintenance", config.station_id)
         end
     end
 
@@ -1506,17 +1318,16 @@ local function runStation(config)
     end
 
     -- Display status on monitor (if available)
-    shared.mon = config.has_display and display.getOutput() or nil
-    shared.anim_frame = 0
+    local mon = config.has_display and display.getOutput() or nil
+    local anim_frame = 0
     local function displayStationStatus()
-        if not shared.mon then return end
+        if not mon then return end
 
-        local mon = shared.mon
         display.clear(mon, colors.black)
         local w, h = mon.getSize()
 
         -- Minimal maintenance screen: station ID + closed message only
-        if shared.state == "SHUTDOWN" then
+        if state == "SHUTDOWN" then
             -- Defensive clear to prevent any ghosting on early return
             display.clear(mon, colors.black)
             local centerY = math.floor(h / 2)
@@ -1548,41 +1359,41 @@ local function runStation(config)
         local shouldAnimate = false
         local secondaryAnim = ""
 
-        if shared.state == "SHUTDOWN" then
+        if state == "SHUTDOWN" then
             statusIcon = "[XX]"
             statusText = "MNT"
             statusColor = colors.red
             -- Flash for visibility
-            if anim.shouldFlash(shared.anim_frame, 2) then
+            if anim.shouldFlash(anim_frame, 2) then
                 statusColor = colors.orange
             end
-        elseif shared.state == "DEPARTING" then
+        elseif state == "DEPARTING" then
             statusIcon = anim.icons.departing
             statusText = "DEPARTING"
             statusColor = colors.orange
             -- Add departure countdown animation
-            secondaryAnim = anim.getSpinner(shared.anim_frame, 4)  -- Progress bar style
-        elseif shared.state == "BOARDING" then
+            secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
+        elseif state == "BOARDING" then
             statusIcon = anim.icons.boarding
             statusText = "BOARDING"
             statusColor = colors.lime
             -- Gentle pulsing effect
-            if anim.shouldFlash(shared.anim_frame, 3) then
+            if anim.shouldFlash(anim_frame, 3) then
                 statusColor = colors.lightGray
             end
-        elseif shared.state == "ARRIVED" then
+        elseif state == "ARRIVED" then
             statusIcon = anim.icons.present
             statusText = "ARRIVED"
             statusColor = colors.cyan
             -- Spinner to show announcements playing
             shouldAnimate = true
-            secondaryAnim = anim.getSpinner(shared.anim_frame, 2)  -- Dot loader
+            secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
         else  -- IN_TRANSIT
             statusIcon = anim.icons.transit
             statusText = "IN TRANSIT"
             statusColor = colors.yellow
             shouldAnimate = true
-            secondaryAnim = anim.getSpinner(shared.anim_frame, 2)  -- Dot loader
+            secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
         end
 
         mon.setCursorPos(2, 9)
@@ -1594,12 +1405,12 @@ local function runStation(config)
         mon.write(statusIcon .. " " .. statusText)
 
         -- Animated secondary indicator
-        if shouldAnimate or shared.state == "DEPARTING" then
+        if shouldAnimate or state == "DEPARTING" then
             display.centerText(mon, 11, secondaryAnim, statusColor, colors.black)
         end
 
         -- Maintenance message (only shown in SHUTDOWN state)
-        if shared.state == "SHUTDOWN" then
+        if state == "SHUTDOWN" then
             mon.setCursorPos(2, 13)
             mon.setTextColor(colors.red)
             mon.write("MRT UNDER MAINTENANCE")
@@ -1622,8 +1433,8 @@ local function runStation(config)
         local avg = getAverageTripTime()
 
         -- Show timing section if we have data
-        if (current_status ~= "N/A" or shared.trip_status ~= "N/A") and avg then
-            local displayStatus = current_status ~= "N/A" and current_status or shared.trip_status
+        if (current_status ~= "N/A" or trip_status ~= "N/A") and avg then
+            local displayStatus = current_status ~= "N/A" and current_status or trip_status
             local timingIcon
             local timingColor
             local shouldFlash = false
@@ -1642,7 +1453,7 @@ local function runStation(config)
 
             -- Flash DELAYED status for urgency
             local displayColor = timingColor
-            if shouldFlash and not anim.shouldFlash(shared.anim_frame, 2) then
+            if shouldFlash and not anim.shouldFlash(anim_frame, 2) then
                 displayColor = colors.gray
             end
 
@@ -1657,7 +1468,7 @@ local function runStation(config)
             mon.write(timingIcon .. " " .. display3)
 
             -- Show real-time trip progress
-            if shared.state == "IN_TRANSIT" and current_duration then
+            if state == "IN_TRANSIT" and current_duration then
                 local eta = avg - current_duration
                 mon.setCursorPos(2, 15)
                 mon.setTextColor(displayColor)
@@ -1675,21 +1486,21 @@ local function runStation(config)
                 mon.write(string.format("%.0f", avg) .. "s")
             else
                 -- Show average with progress bar when not in transit
-                if #shared.trip_history > 0 then
+                if #trip_history > 0 then
                     mon.setCursorPos(2, 15)
                     mon.setTextColor(colors.gray)
                     mon.write("Avg: " .. string.format("%.1f", avg) .. "s")
 
                     -- Visual history indicator
                     local barWidth = math.min(w - 4, 20)
-                    local progress = #shared.trip_history / config.trip_history_size
+                    local progress = #trip_history / config.trip_history_size
                     local bar = anim.progressBar(progress, barWidth, "=", "-")
                     mon.setCursorPos(2, 16)
                     mon.setTextColor(colors.blue)
                     mon.write("[" .. bar .. "]")
                     mon.setCursorPos(w - 8, 16)
                     mon.setTextColor(colors.gray)
-                    mon.write(#shared.trip_history .. "/" .. config.trip_history_size)
+                    mon.write(#trip_history .. "/" .. config.trip_history_size)
                 end
             end
         end
@@ -1706,9 +1517,9 @@ local function runStation(config)
         mon.write(VERSION)
 
         -- Registration indicator
-        local right_label = shared.registered and "[REG]" or "[DISC]"
+        local right_label = registered and "[REG]" or "[DISC]"
         mon.setCursorPos(w - #right_label + 1, h)
-        mon.setTextColor(shared.registered and colors.lime or colors.gray)
+        mon.setTextColor(registered and colors.lime or colors.gray)
         mon.write(right_label)
     end
 
@@ -1720,18 +1531,18 @@ local function runStation(config)
         local now = os.epoch("utc") / 1000
 
         -- State machine
-        if shared.shared.state == "IN_TRANSIT" then
+        if state == "IN_TRANSIT" then
             -- Check for cart arrival
             local detector_active = checkDetector()
-            if detector_active and not shared.shared.cart_present then
-                shared.shared.cart_present = true
-                shared.shared.state = "ARRIVED"
+            if detector_active and not cart_present then
+                cart_present = true
+                state = "ARRIVED"
 
                 -- Calculate trip time if we have a start time
-                if shared.shared.trip_start_time then
-                    local trip_duration = now - shared.shared.trip_start_time
+                if trip_start_time then
+                    local trip_duration = now - trip_start_time
                     recordTrip(trip_duration)
-                    shared.shared.trip_start_time = nil  -- Stop timer - trip is complete!
+                    trip_start_time = nil  -- Stop timer - trip is complete!
                 end
 
                 print("[" .. os.date("%H:%M:%S") .. "] Cart arrived! Status: ARRIVED (playing announcements...)")
@@ -1740,25 +1551,30 @@ local function runStation(config)
                 -- but doesn't start dispatch countdown yet
                 sendStatus()
 
-                -- Trigger arrival chime (NON-BLOCKING!)
-                -- Audio plays in parallel, shared.state transitions when complete
-                os.queueEvent("play_audio", "arrival", config.station_id)
+                -- Play arrival chime sequence (station-specific or fallback!)
+                -- This is BLOCKING - station won't respond to messages during playback
+                audio.playArrivalChime(speaker, config.station_id)
+
+                -- Audio complete! Now ready to accept dispatch
+                print("[" .. os.date("%H:%M:%S") .. "] Announcements complete! Status: BOARDING")
+                state = "BOARDING"
+                sendStatus()
             end
 
-        elseif shared.shared.state == "ARRIVED" then
-            -- Wait for audio to complete (handled by audio_complete event below)
-            -- Station remains responsive to messages during audio playback
+        elseif state == "ARRIVED" then
+            -- Wait for audio to complete (handled in IN_TRANSIT transition above)
+            -- This state should be very brief, just during audio playback
+            -- Nothing to do here - just waiting
 
-        elseif shared.shared.state == "DEPARTING" then
+        elseif state == "DEPARTING" then
             -- Play departure sound ONCE at the start of DEPARTING state
-            if not shared.shared.departure_sound_played then
-                -- Trigger departure sound (NON-BLOCKING!)
-                os.queueEvent("play_audio", "departure")
-                shared.shared.departure_sound_played = true
+            if not departure_sound_played then
+                audio.playDoorClosingChirp(speaker)  -- Plays "Cart Departing" + chirp audio
+                departure_sound_played = true
             end
 
             -- Non-blocking delay in DEPARTING state
-            if now - shared.departing_start_time >= config.departing_delay then
+            if now - departing_start_time >= config.departing_delay then
                 print("[" .. os.date("%H:%M:%S") .. "] Activating powered rail...")
 
                 -- Activate powered rail for duration (no audio during this - already played)
@@ -1774,40 +1590,40 @@ local function runStation(config)
 
                 -- Cart has left!
                 print("[" .. os.date("%H:%M:%S") .. "] Cart departed! Status: IN TRANSIT")
-                shared.state = "IN_TRANSIT"
-                shared.cart_present = false
-                shared.trip_start_time = os.epoch("utc") / 1000  -- Start timing new trip
-                shared.departure_sound_played = false  -- Reset for next departure
+                state = "IN_TRANSIT"
+                cart_present = false
+                trip_start_time = os.epoch("utc") / 1000  -- Start timing new trip
+                departure_sound_played = false  -- Reset for next departure
                 sendStatus()
             end
 
-        elseif shared.state == "SHUTDOWN" then
+        elseif state == "SHUTDOWN" then
             -- Station is in maintenance mode - cart parked indefinitely
             -- Just wait for DISPATCH command to exit (handled in handleDispatch)
             -- No actions needed here, station is fully parked
         end
-        -- BOARDING shared.state just waits for DISPATCH command
+        -- BOARDING state just waits for DISPATCH command
 
-        -- Periodic status (only send if shared.registered)
-        if shared.registered then
-            if now - shared.last_status_send > config.status_send_interval then
+        -- Periodic status (only send if registered)
+        if registered then
+            if now - last_status_send > config.status_send_interval then
                 sendStatus()
-                shared.last_status_send = now
+                last_status_send = now
             end
 
             -- Heartbeat
-            if now - shared.last_heartbeat > config.heartbeat_interval then
+            if now - last_heartbeat > config.heartbeat_interval then
                 sendHeartbeat()
-                shared.last_heartbeat = now
+                last_heartbeat = now
             end
         else
             -- Still waiting for DISCOVER - log reminder every 10 seconds
             if now % 10 < 0.2 then
-                print("[WAITING] Not shared.registered yet. Waiting for DISCOVER from ops center...")
+                print("[WAITING] Not registered yet. Waiting for DISCOVER from ops center...")
             end
         end
 
-        -- Periodic shared.state persistence (every 5 seconds)
+        -- Periodic state persistence (every 5 seconds)
         if now - last_state_save > 5 then
             persistState()
             last_state_save = now
@@ -1815,50 +1631,23 @@ local function runStation(config)
 
         -- Periodic modem health check (every 30 seconds)
         if now - last_modem_check > 30 then
-            network.checkHealth(shared.modem, config.network_channel)
+            network.checkHealth(modem, config.network_channel)
             last_modem_check = now
         end
 
         -- Update display
         if now - last_display_update > config.display_update_interval then
             displayStationStatus()
-            shared.anim_frame = shared.anim_frame + 1
+            anim_frame = anim_frame + 1
             last_display_update = now
         end
 
-        -- Check for events (messages AND audio completion)
-        local timer = os.startTimer(0.1)
-        local event, param1, param2, param3, param4, param5 = os.pullEvent()
-
-        if event == "audio_complete" then
-            -- Audio finished playing
-            local audio_type = param1
-            if audio_type == "arrival" and shared.shared.state == "ARRIVED" then
-                print("[" .. os.date("%H:%M:%S") .. "] Announcements complete! Status: BOARDING")
-                shared.shared.state = "BOARDING"
-                sendStatus()
-            end
-        elseif event == "modem_message" then
-            os.cancelTimer(timer)
-            local modem_side = param1
-            local channel = param2
-            local message = param4
-            if type(message) == "string" then
-                local decoded = protocol.deserialize(message)
-                if decoded then
-                    handleMessage(decoded)
-                end
-            end
-        elseif event == "timer" and param1 == timer then
-            -- Timeout, continue loop
+        -- Check messages
+        local msg, channel = network.receiveWithTimeout(0.1)
+        if msg then
+            handleMessage(msg)
         end
     end
-    end  -- End stationMainLoop
-
-    -- ========================================================================
-    -- RUN PARALLEL LOOPS
-    -- ========================================================================
-    parallel.waitForAny(stationMainLoop, stationAudioLoop)
 end
 
 -- ============================================================================
@@ -1874,12 +1663,6 @@ local function runOps(config)
     local update_available = false
     local remote_version = nil
     local last_update_check = 0
-    local composer_failure_logged = false
-    local update_checker
-    local update_state
-    if composer then
-        update_checker, update_state = composer.create_update_checker("transit", VERSION, 30)
-    end
 
     -- Setup
     term.clear()
@@ -2097,35 +1880,7 @@ local function runOps(config)
     end
 
     -- Check remote version from GitHub (ops only)
-    local function sync_update_state()
-        if update_state then
-            if update_state.latest_version then
-                remote_version = update_state.latest_version
-            end
-            update_available = update_state.update_available or false
-        end
-    end
-
     local function checkRemoteVersion()
-        sync_update_state()
-        if update_state then
-            composer_failure_logged = false
-            return
-        end
-
-        if composer and not composer_failure_logged then
-            local result = composer.check("transit", VERSION)
-            if result.ok then
-                remote_version = result.version or VERSION
-                update_available = result.update_available or false
-                composer_failure_logged = false
-                return
-            else
-                print("[UPDATE] Composer check failed: " .. tostring(result.error))
-                composer_failure_logged = true
-            end
-        end
-
         if not config.github_url or config.github_url == "" then return end
         local resp = http.get(config.github_url)
         if resp then
@@ -2579,18 +2334,14 @@ local function runOps(config)
     -- Kick off initial update check immediately
     checkRemoteVersion()
     last_update_check = os.epoch("utc") / 1000
-    if update_available then
-        print(string.format("[UPDATE] New version available: %s (running %s)", tostring(remote_version or "?"), VERSION))
-    end
 
-    local function opsMainLoop()
-        local last_dispatch_check = 0
-        local dispatched = false
-        local last_modem_check = 0
+    -- Main loop
+    local last_dispatch_check = 0
+    local dispatched = false
+    local last_modem_check = 0
 
-        while true do
-            sync_update_state()
-            local now = os.epoch("utc") / 1000
+    while true do
+        local now = os.epoch("utc") / 1000
 
         -- Periodic discovery
         if now - last_discovery > config.discovery_interval then
@@ -2700,16 +2451,9 @@ local function runOps(config)
             else
                 if MODEM_DEBUG then print("[DEBUG] ERROR: Non-string message: " .. type(message)) end
             end
-            elseif event == "timer" and param1 == timer then
-                -- Timeout, continue loop
-            end
+        elseif event == "timer" and param1 == timer then
+            -- Timeout, continue loop
         end
-    end
-
-    if update_checker then
-        parallel.waitForAny(opsMainLoop, update_checker)
-    else
-        opsMainLoop()
     end
 end
 
@@ -2731,34 +2475,21 @@ do
             print("  -h, --help           Show this help message")
             return
         elseif a1 == "-u" or a1 == "--update" then
-            local url_arg = tArgs[2]
-            if composer and not url_arg then
-                print("CouncilCraft Transit Network Updater (composer)")
-                print("==============================================")
+            local url = tArgs[2] or (SCRIPT_OPS_CONFIG and SCRIPT_OPS_CONFIG.github_url)
+            print("CouncilCraft Transit Network Updater")
+            print("====================================")
+            print("")
+            local ok = install_from_github(url)
+            if ok then
                 print("")
-                local ok, err = composer.install("transit")
-                if ok then
-                    print("Composer update complete. Restart to use the new version.")
+                write("Reboot now? (y/n): ")
+                local resp = read()
+                if resp == "y" or resp == "Y" then
+                    print("Rebooting...")
+                    sleep(1)
+                    os.reboot()
                 else
-                    print("Composer update failed: " .. tostring(err or "unknown error"))
-                end
-            else
-                local url = url_arg or (SCRIPT_OPS_CONFIG and SCRIPT_OPS_CONFIG.github_url)
-                print("CouncilCraft Transit Network Updater")
-                print("====================================")
-                print("")
-                local ok = install_from_github(url)
-                if ok then
-                    print("")
-                    write("Reboot now? (y/n): ")
-                    local resp = read()
-                    if resp == "y" or resp == "Y" then
-                        print("Rebooting...")
-                        sleep(1)
-                        os.reboot()
-                    else
-                        print("Update complete. Run 'reboot' when ready.")
-                    end
+                    print("Update complete. Run 'reboot' when ready.")
                 end
             end
             return
