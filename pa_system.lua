@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.1.2"
+local VERSION = "0.1.3-forward-ref-fix"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -405,6 +405,23 @@ local function refresh_peripherals()
   end
 end
 
+local function sync_update_state()
+  if update_state then
+    if update_state.latest_version then
+      state.latest_version = update_state.latest_version
+    end
+    state.update_available = update_state.update_available or false
+    if update_state.last_error ~= state.last_update_error then
+      state.last_update_error = update_state.last_error
+      if update_state.last_error then
+        log("WARN", "Composer update check failed: " .. tostring(update_state.last_error))
+      else
+        log("INFO", "Composer update check restored")
+      end
+    end
+  end
+end
+
 local function init()
   persistence_setup()
 
@@ -555,23 +572,6 @@ local function collect_marquee_rows()
   end
 
   return rows
-end
-
-local function sync_update_state()
-  if update_state then
-    if update_state.latest_version then
-      state.latest_version = update_state.latest_version
-    end
-    state.update_available = update_state.update_available or false
-    if update_state.last_error ~= state.last_update_error then
-      state.last_update_error = update_state.last_error
-      if update_state.last_error then
-        log("WARN", "Composer update check failed: " .. tostring(update_state.last_error))
-      else
-        log("INFO", "Composer update check restored")
-      end
-    end
-  end
 end
 
 local function render_monitors()
