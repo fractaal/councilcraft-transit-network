@@ -10,17 +10,18 @@ json.encode = textutils.serializeJSON
 json.decode = textutils.unserializeJSON
 
 local function http_get(url, binary)
-  local headers = {}  -- Empty table instead of nil
-  local resp
+  local resp, err
+  -- Pass nil for headers to remain compatible with both CC:T and legacy HTTP APIs.
   if binary then
-    resp = http.get(url, headers, true)
+    resp, err = http.get(url, nil, true)
   else
-    resp = http.get(url, headers)
+    resp, err = http.get(url)
   end
 
   -- Validate immediately after http.get
   if not resp then
-    return nil, "HTTP request failed for " .. url
+    local reason = err and (": " .. tostring(err)) or ""
+    return nil, "HTTP request failed for " .. url .. reason
   end
   if type(resp) ~= "table" then
     return nil, "HTTP response is not a table (got " .. type(resp) .. ") for " .. url
@@ -34,7 +35,7 @@ local function http_get(url, binary)
 
   -- Read immediately to avoid handle being closed
   local ok, data = pcall(function() return resp.readAll() end)
-  local close_ok = pcall(function() resp.close() end)
+  pcall(function() resp.close() end)
 
   if not ok then
     return nil, "Failed to read HTTP response for " .. url .. ": " .. tostring(data)

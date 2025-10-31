@@ -1,6 +1,6 @@
 {
   "name": "composer",
-  "version": "0.2.3-fix-pcall-syntax",
+  "version": "0.2.4-http-handle-compat",
   "description": "CouncilCraft Composer - Lightweight package manager for distributing ComputerCraft software from GitHub.",
   "files": [
     {
