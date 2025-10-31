@@ -1,6 +1,6 @@
 {
   "name": "pa-system",
-  "version": "0.2.4-fix-persistent-pa-broadcast",
+  "version": "0.2.5-fix-once-in-a-while-crash",
   "description": "CouncilCraft PA & Entertainment System controller/station software with internal audio support.",
   "files": [
     {

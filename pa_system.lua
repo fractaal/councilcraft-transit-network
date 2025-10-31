@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.4-fix-persistent-pa-broadcast"
+local VERSION = "0.2.5-fix-once-in-a-while-crash"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -29,7 +29,7 @@ local DEFAULT_PAUSE_DURATION = 30  -- Default pause duration in seconds for play
 
 local MONITOR_TEXT_SCALE = 1.5
 local MARQUEE_MIN_GAP = 6
-local MARQUEE_SCROLL_INTERVAL = 0.25  -- Seconds between marquee scroll ticks
+local MARQUEE_SCROLL_INTERVAL = 0.15  -- Seconds between marquee scroll ticks
 
 local CONFIG_PATH = "/.pa_config"
 local STATE_PATH = "/.pa_state"
@@ -1969,7 +1969,7 @@ local function httpLoop()
         pending_requests[url] = nil
 
         if not request then
-          if handle then
+          if handle and handle.close then
             handle.close()
           else
             log("WARN", "HTTP request to" .. url .. " completed but no pending request found (handle couldn't be closed)")
