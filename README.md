@@ -15,6 +15,19 @@ A ComputerCraft: Tweaked automated transit system for Minecraft. This system use
 - Synchronized dispatch across all stations
 - Expandable to multiple lines and stations
 
+## Quick Install with Composer (Recommended)
+
+On any ComputerCraft: Tweaked computer with HTTP enabled:
+
+```lua
+wget https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/lib/composer.lua /lib/composer.lua
+wget https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/composer.lua composer.lua
+composer install transit       -- installs /apps/transit/transit.lua + startup stub
+composer install pa-system     -- installs /apps/pa_system/pa_system.lua + startup stub
+```
+
+Both packages ship with startup wrappers, so each computer will reboot straight into the program after install. Use `composer update <package>` later to grab the latest release.
+
 ## How It Works
 
 Each station monitors a detector rail for cart presence. When all stations report their carts are present, the ops center sends a DISPATCH command, and all stations simultaneously activate their powered rails to send carts to the next station.

@@ -4,6 +4,18 @@
 local VERSION = "0.1.1-pa-fixes"
 local CHANNEL = 143
 
+if not package.path:find("/lib/%.%?%.lua", 1, true) then
+  package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
+end
+
+local composer
+do
+  local ok, mod = pcall(require, "composer")
+  if ok then
+    composer = mod
+  end
+end
+
 local DEFAULT_API_BASE = "https://example-pa-endpoint.run.app"
 local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
 local CHIME_URL = "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/sounds/SG_MRT_BELL.dfpwm"
@@ -37,6 +49,8 @@ local state = {
   playback_start_time = nil,
   volume = 1.0,  -- Volume multiplier (0.0 to 3.0)
   pa_resume_context = nil,
+  latest_version = VERSION,
+  update_available = false,
 }
 
 local speakers = {}
@@ -189,6 +203,7 @@ local function print_help()
   remove <index> - remove track from playlist
   move <from> <to> - reorder tracks
   volume [0.0-3.0] - get/set playback volume
+  update - install latest version via composer
   pa "msg" [url] - broadcast PA announcement
   reload - reload state from disk
   setapi <url> - update API base URL
@@ -432,6 +447,7 @@ local function init()
     log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
   end
   log("INFO", "Type 'help' for command list.")
+  check_for_updates()
 end
 
 local function persist_pa_state()
@@ -534,6 +550,22 @@ local function collect_marquee_rows()
   return rows
 end
 
+local function check_for_updates()
+  if not composer then
+    return
+  end
+  local result = composer.check("pa-system", VERSION)
+  if not result.ok then
+    log("WARN", "Composer update check failed: " .. tostring(result.error))
+    return
+  end
+  state.latest_version = result.version or VERSION
+  state.update_available = result.update_available or false
+  if state.update_available then
+    log("INFO", string.format("Update available: %s (running %s)", state.latest_version, VERSION))
+  end
+end
+
 local function render_monitors()
   if #monitors == 0 then
     return
@@ -593,7 +625,7 @@ local function render_monitors()
 
   if global_scroll then
     if not marquee_timer then
-      marquee_timer = os.startTimer(0.25)
+      marquee_timer = os.startTimer(0.1)
     end
   elseif marquee_timer then
     os.cancelTimer(marquee_timer)
@@ -1415,6 +1447,13 @@ local function handle_command(line)
     else
       table.insert(parts, "pa=idle")
     end
+    if composer then
+      if state.update_available then
+        table.insert(parts, "update_available=" .. tostring(state.latest_version or "?"))
+      else
+        table.insert(parts, "update=current")
+      end
+    end
     log("INFO", "Status: " .. table.concat(parts, " | "))
   elseif cmd == "playlist" then
     if role ~= "controller" then
@@ -1508,6 +1547,19 @@ local function handle_command(line)
         end
         persist_pa_state()
         log("INFO", string.format("Moved track #%d to #%d", from, to))
+      end
+    end
+  elseif cmd == "update" then
+    if not composer then
+      log("WARN", "Composer not available on this system")
+    else
+      log("INFO", "Checking for updates via composer...")
+      local ok, err = composer.install("pa-system")
+      if ok then
+        log("INFO", "Update installed. Please restart to run the latest version.")
+        state.update_available = false
+      else
+        log("ERROR", "Composer update failed: " .. tostring(err or "unknown"))
       end
     end
   elseif cmd == "pa" then

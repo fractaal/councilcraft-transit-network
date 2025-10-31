@@ -1,0 +1,15 @@
+{
+  "name": "pa-system",
+  "version": "0.1.1-pa-fixes",
+  "description": "CouncilCraft PA & Entertainment System controller/station software.",
+  "files": [
+    {
+      "path": "/apps/pa_system/pa_system.lua",
+      "url": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/pa_system.lua"
+    }
+  ],
+  "startup": {
+    "path": "/startup/pa_system.lua",
+    "command": "/apps/pa_system/pa_system.lua"
+  }
+}

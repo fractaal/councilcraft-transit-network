@@ -1,0 +1,15 @@
+{
+  "name": "transit",
+  "version": "v0.11.0",
+  "description": "CouncilCraft Transit network controller/station software.",
+  "files": [
+    {
+      "path": "/apps/transit/transit.lua",
+      "url": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/transit.lua"
+    }
+  ],
+  "startup": {
+    "path": "/startup/transit.lua",
+    "command": "/apps/transit/transit.lua"
+  }
+}

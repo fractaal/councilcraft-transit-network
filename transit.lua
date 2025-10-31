@@ -9,6 +9,18 @@
 local VERSION = "v0.11.0"
 local DESCRIPTOR="non-blocking-audio-parallel-loops"
 
+if not package.path:find("/lib/%.%?%.lua", 1, true) then
+    package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
+end
+
+local composer
+do
+    local ok, mod = pcall(require, "composer")
+    if ok then
+        composer = mod
+    end
+end
+
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
 
@@ -1227,6 +1239,13 @@ local function runStation(config)
         mon = nil
     }
 
+    if composer then
+        local result = composer.check("transit", VERSION)
+        if result.ok and result.update_available then
+            print(string.format("[UPDATE] New version available: %s (running %s)", tostring(result.version or "?"), VERSION))
+        end
+    end
+
     -- ========================================================================
     -- STATION AUDIO LOOP (runs in parallel with main loop)
     -- ========================================================================
@@ -1854,6 +1873,7 @@ local function runOps(config)
     local update_available = false
     local remote_version = nil
     local last_update_check = 0
+    local composer_failure_logged = false
 
     -- Setup
     term.clear()
@@ -2072,6 +2092,19 @@ local function runOps(config)
 
     -- Check remote version from GitHub (ops only)
     local function checkRemoteVersion()
+        if composer then
+            local result = composer.check("transit", VERSION)
+            if result.ok then
+                remote_version = result.version or VERSION
+                update_available = result.update_available or false
+                composer_failure_logged = false
+                return
+            elseif not composer_failure_logged then
+                print("[UPDATE] Composer check failed: " .. tostring(result.error))
+                composer_failure_logged = true
+            end
+        end
+
         if not config.github_url or config.github_url == "" then return end
         local resp = http.get(config.github_url)
         if resp then
@@ -2525,6 +2558,9 @@ local function runOps(config)
     -- Kick off initial update check immediately
     checkRemoteVersion()
     last_update_check = os.epoch("utc") / 1000
+    if update_available then
+        print(string.format("[UPDATE] New version available: %s (running %s)", tostring(remote_version or "?"), VERSION))
+    end
 
     -- Main loop
     local last_dispatch_check = 0
@@ -2666,21 +2702,34 @@ do
             print("  -h, --help           Show this help message")
             return
         elseif a1 == "-u" or a1 == "--update" then
-            local url = tArgs[2] or (SCRIPT_OPS_CONFIG and SCRIPT_OPS_CONFIG.github_url)
-            print("CouncilCraft Transit Network Updater")
-            print("====================================")
-            print("")
-            local ok = install_from_github(url)
-            if ok then
+            local url_arg = tArgs[2]
+            if composer and not url_arg then
+                print("CouncilCraft Transit Network Updater (composer)")
+                print("==============================================")
                 print("")
-                write("Reboot now? (y/n): ")
-                local resp = read()
-                if resp == "y" or resp == "Y" then
-                    print("Rebooting...")
-                    sleep(1)
-                    os.reboot()
+                local ok, err = composer.install("transit")
+                if ok then
+                    print("Composer update complete. Restart to use the new version.")
                 else
-                    print("Update complete. Run 'reboot' when ready.")
+                    print("Composer update failed: " .. tostring(err or "unknown error"))
+                end
+            else
+                local url = url_arg or (SCRIPT_OPS_CONFIG and SCRIPT_OPS_CONFIG.github_url)
+                print("CouncilCraft Transit Network Updater")
+                print("====================================")
+                print("")
+                local ok = install_from_github(url)
+                if ok then
+                    print("")
+                    write("Reboot now? (y/n): ")
+                    local resp = read()
+                    if resp == "y" or resp == "Y" then
+                        print("Rebooting...")
+                        sleep(1)
+                        os.reboot()
+                    else
+                        print("Update complete. Run 'reboot' when ready.")
+                    end
                 end
             end
             return

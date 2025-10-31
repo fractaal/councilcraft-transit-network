@@ -1,0 +1,10 @@
+{
+  "packages": {
+    "transit": {
+      "manifest": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/packages/transit.json"
+    },
+    "pa-system": {
+      "manifest": "https://raw.githubusercontent.com/benjude/councilcraft_transit_network/main/packages/pa-system.json"
+    }
+  }
+}
