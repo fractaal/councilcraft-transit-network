@@ -1,6 +1,6 @@
 {
   "name": "pa-system",
-  "version": "0.2.5-fix-once-in-a-while-crash",
+  "version": "0.2.6-new-sounds",
   "description": "CouncilCraft PA & Entertainment System controller/station software with internal audio support.",
   "files": [
     {
@@ -10,6 +10,18 @@
     {
       "path": "/apps/pa_system/sounds/WELCOME_IMTL.dfpwm",
       "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/WELCOME_IMTL.dfpwm"
+    },
+    {
+      "path": "/apps/pa_system/sounds/GENERIC_ENJOY_STAY.dfpwm",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/GENERIC_ENJOY_STAY.dfpwm"
+    },
+    {
+      "path": "/apps/pa_system/sounds/GENERIC_PA_BELL.dfpwm",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/GENERIC_PA_BELL.dfpwm"
+    },
+    {
+      "path": "/apps/pa_system/sounds/WARN_PLATFORM.dfpwm",
+      "url": "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/WARN_PLATFORM.dfpwm"
     }
   ],
   "startup": {
