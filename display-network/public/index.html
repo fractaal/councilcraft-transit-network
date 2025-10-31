@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Display Network - Upload Portal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;900&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -12,40 +15,19 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            background: #FFBE0B;
             min-height: 100vh;
             padding: 20px;
         }
 
         .container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 900px;
+            background: #FEFEFE;
+            border: 5px solid #000;
+            box-shadow: 12px 12px 0 #000;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 40px;
-        }
-
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 28px;
-        }
-
-        h3 {
-            color: #333;
-            margin: 20px 0 10px 0;
-        }
-
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-
-        .auth-section {
-            margin-bottom: 30px;
         }
 
         .main-section {
@@ -53,52 +35,101 @@
         }
 
         .main-section.active {
-            display: block;
+            display: grid;
+            grid-template-columns: 450px 1fr;
+            gap: 40px;
+            align-items: start;
+        }
+
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        .right-panel {
+            min-height: 400px;
+        }
+
+        h1 {
+            color: #000;
+            margin-bottom: 10px;
+            font-size: 36px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: -1px;
+        }
+
+        h3 {
+            color: #000;
+            margin: 20px 0 10px 0;
+            font-size: 20px;
+            font-weight: 900;
+            text-transform: uppercase;
+        }
+
+        .subtitle {
+            color: #000;
+            margin-bottom: 30px;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .auth-section {
+            margin-bottom: 30px;
         }
 
         input, select, textarea, button {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             margin: 8px 0;
-            border: 2px solid #e0e0e0;
-            border-radius: 6px;
-            font-size: 14px;
-            font-family: inherit;
+            border: 4px solid #000;
+            border-radius: 0;
+            font-size: 15px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            background: #fff;
         }
 
         input:focus, select:focus, textarea:focus {
             outline: none;
-            border-color: #667eea;
+            box-shadow: 0 0 0 4px #3A86FF;
         }
 
         button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
+            background: #8338EC;
+            color: #fff;
+            border: 4px solid #000;
             cursor: pointer;
-            font-weight: 600;
-            transition: transform 0.2s;
+            font-weight: 900;
+            text-transform: uppercase;
+            box-shadow: 6px 6px 0 #000;
+            transition: all 0.1s;
         }
 
         button:hover {
-            transform: translateY(-2px);
+            transform: translate(-2px, -2px);
+            box-shadow: 8px 8px 0 #000;
         }
 
         button:active {
-            transform: translateY(0);
+            transform: translate(2px, 2px);
+            box-shadow: 4px 4px 0 #000;
         }
 
         button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+            transform: none;
+            box-shadow: 6px 6px 0 #000;
         }
 
         button.danger {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            background: #FF006E;
         }
 
         button.secondary {
-            background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+            background: #6c757d;
         }
 
         .file-input-wrapper {
@@ -115,31 +146,37 @@
 
         .file-input-label {
             display: block;
-            padding: 12px;
-            border: 2px dashed #667eea;
-            border-radius: 6px;
+            padding: 16px;
+            border: 4px dashed #000;
             text-align: center;
             cursor: pointer;
-            transition: all 0.3s;
-            color: #667eea;
-            font-weight: 500;
+            transition: all 0.1s;
+            color: #000;
+            font-weight: 900;
+            background: #fff;
+            text-transform: uppercase;
         }
 
         .file-input-label:hover {
-            background: #f5f5ff;
-            border-color: #764ba2;
+            background: #3A86FF;
+            color: #fff;
+            border-style: solid;
+            transform: translate(-2px, -2px);
+            box-shadow: 6px 6px 0 #000;
         }
 
         .file-input-label.has-file {
             border-style: solid;
-            background: #f5f5ff;
+            background: #06FFA5;
+            color: #000;
         }
 
         .preview {
             margin: 15px 0;
-            border-radius: 6px;
+            border: 4px solid #000;
             overflow: hidden;
             display: none;
+            box-shadow: 6px 6px 0 #000;
         }
 
         .preview.active {
@@ -151,14 +188,17 @@
             height: auto;
             max-height: 300px;
             object-fit: contain;
-            background: #f5f5f5;
+            background: #000;
+            display: block;
         }
 
         .message {
-            padding: 12px;
-            border-radius: 6px;
+            padding: 16px;
             margin: 10px 0;
             display: none;
+            border: 4px solid #000;
+            font-weight: 900;
+            text-transform: uppercase;
         }
 
         .message.active {
@@ -166,42 +206,62 @@
         }
 
         .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background: #06FFA5;
+            color: #000;
         }
 
         .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background: #FF006E;
+            color: #fff;
         }
 
         .collections-list {
             margin: 15px 0;
-            max-height: 200px;
+            max-height: 300px;
             overflow-y: auto;
-            border: 1px solid #e0e0e0;
-            border-radius: 6px;
+            border: 4px solid #000;
             padding: 10px;
+            background: #fff;
+        }
+
+        .collections-list::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        .collections-list::-webkit-scrollbar-track {
+            background: #fff;
+            border: 3px solid #000;
+        }
+
+        .collections-list::-webkit-scrollbar-thumb {
+            background: #3A86FF;
+            border: 3px solid #000;
+        }
+
+        .collections-list::-webkit-scrollbar-thumb:hover {
+            background: #FFBE0B;
         }
 
         .collection-item {
-            padding: 10px;
-            margin: 5px 0;
-            background: #f8f9fa;
-            border-radius: 4px;
+            padding: 12px;
+            margin: 8px 0;
+            background: #fff;
+            border: 3px solid #000;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: all 0.1s;
+            font-weight: 700;
         }
 
         .collection-item:hover {
-            background: #e9ecef;
+            background: #FFBE0B;
+            transform: translate(-2px, -2px);
+            box-shadow: 4px 4px 0 #000;
         }
 
         .collection-item.selected {
-            background: #667eea;
-            color: white;
+            background: #8338EC;
+            color: #fff;
+            box-shadow: 4px 4px 0 #000;
         }
 
         .new-collection-form {
@@ -218,36 +278,58 @@
         .new-collection-form button {
             flex: 0 0 auto;
             width: auto;
-            padding: 12px 24px;
+            padding: 14px 24px;
             margin: 0;
         }
 
         .resolution-info {
-            background: #e7f3ff;
-            padding: 10px;
-            border-radius: 6px;
+            background: #3A86FF;
+            color: #fff;
+            padding: 14px;
             margin: 10px 0;
             font-size: 13px;
-            color: #004085;
+            border: 4px solid #000;
+            font-weight: 900;
         }
 
         .images-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 15px;
+            gap: 20px;
             margin: 20px 0;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .images-grid::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        .images-grid::-webkit-scrollbar-track {
+            background: #fff;
+            border: 3px solid #000;
+        }
+
+        .images-grid::-webkit-scrollbar-thumb {
+            background: #8338EC;
+            border: 3px solid #000;
+        }
+
+        .images-grid::-webkit-scrollbar-thumb:hover {
+            background: #FFBE0B;
         }
 
         .image-card {
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
+            border: 4px solid #000;
             overflow: hidden;
-            transition: transform 0.2s;
+            transition: all 0.1s;
+            background: #fff;
         }
 
         .image-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transform: translate(-4px, -4px);
+            box-shadow: 8px 8px 0 #000;
         }
 
         .image-card img {
@@ -255,30 +337,33 @@
             height: 150px;
             object-fit: cover;
             cursor: pointer;
+            display: block;
+            border-bottom: 4px solid #000;
         }
 
         .image-card-info {
-            padding: 10px;
-            background: #f8f9fa;
+            padding: 12px;
+            background: #fff;
         }
 
         .image-card-caption {
             font-size: 13px;
-            color: #666;
-            margin-bottom: 8px;
+            color: #000;
+            margin-bottom: 10px;
             min-height: 20px;
             word-wrap: break-word;
+            font-weight: 700;
         }
 
         .image-card-actions {
             display: flex;
-            gap: 5px;
+            gap: 8px;
         }
 
         .image-card-actions button {
             flex: 1;
-            padding: 6px;
-            font-size: 12px;
+            padding: 8px;
+            font-size: 11px;
             margin: 0;
         }
 
@@ -289,7 +374,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0, 0, 0, 0.9);
             z-index: 1000;
             justify-content: center;
             align-items: center;
@@ -301,8 +386,9 @@
         }
 
         .modal-content {
-            background: white;
-            border-radius: 12px;
+            background: #FEFEFE;
+            border: 5px solid #000;
+            box-shadow: 12px 12px 0 #000;
             max-width: 500px;
             width: 100%;
             padding: 30px;
@@ -312,46 +398,42 @@
             max-width: 100%;
             max-height: 400px;
             object-fit: contain;
-            border-radius: 8px;
+            border: 4px solid #000;
             margin-bottom: 20px;
+            background: #000;
+            display: block;
         }
 
         .modal-close {
-            background: #6b7280;
-            color: white;
-            border: none;
+            background: #000;
+            color: #fff;
+            border: 3px solid #000;
             padding: 8px 16px;
-            border-radius: 6px;
             cursor: pointer;
             float: right;
+            font-weight: 900;
+            box-shadow: 3px 3px 0 #FF006E;
         }
 
-        .tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 2px solid #e0e0e0;
+        .modal-close:hover {
+            background: #FF006E;
+            transform: translate(-1px, -1px);
+            box-shadow: 4px 4px 0 #000;
         }
 
-        .tab {
-            padding: 10px 20px;
-            cursor: pointer;
-            border-bottom: 3px solid transparent;
-            transition: all 0.2s;
+        hr {
+            margin: 30px 0;
+            border: none;
+            border-top: 5px solid #000;
         }
 
-        .tab.active {
-            border-bottom-color: #667eea;
-            color: #667eea;
-            font-weight: 600;
+        .section {
+            margin-bottom: 30px;
         }
 
-        .tab-content {
-            display: none;
-        }
-
-        .tab-content.active {
-            display: block;
+        .upload-disabled {
+            opacity: 0.5;
+            pointer-events: none;
         }
     </style>
 </head>
@@ -369,53 +451,54 @@
 
         <!-- Main Section -->
         <div class="main-section" id="mainSection">
-            <!-- Tabs -->
-            <div class="tabs">
-                <div class="tab active" onclick="switchTab('upload')">Upload</div>
-                <div class="tab" onclick="switchTab('manage')">Manage Images</div>
+            <!-- Left Panel: Collections + Upload -->
+            <div class="left-panel">
+                <!-- Collections Section -->
+                <div class="section">
+                    <h3>Collections</h3>
+                    <div class="collections-list" id="collectionsList"></div>
+
+                    <div class="new-collection-form">
+                        <input type="text" id="newCollectionName" placeholder="New collection name" />
+                        <button onclick="createCollection()">Create</button>
+                    </div>
+
+                    <div class="message success" id="collectionMessage"></div>
+                </div>
+
+                <!-- Upload Section -->
+                <div class="section" id="uploadSection">
+                    <h3>Upload Image</h3>
+                    <div class="resolution-info">
+                        📐 156x242 (4x6 @ 0.5)
+                    </div>
+
+                    <div class="file-input-wrapper">
+                        <input type="file" id="imageFile" accept="image/*" onchange="previewImage(this)" />
+                        <label for="imageFile" class="file-input-label" id="fileLabel">
+                            📁 Select Image
+                        </label>
+                    </div>
+
+                    <div class="preview" id="preview">
+                        <img id="previewImg" alt="Preview" />
+                    </div>
+
+                    <input type="text" id="caption" placeholder="Caption (optional)" />
+
+                    <button onclick="uploadImage()" id="uploadBtn" disabled>Upload & Process</button>
+                    <div class="message" id="uploadMessage"></div>
+                </div>
             </div>
 
-            <!-- Upload Tab -->
-            <div class="tab-content active" id="uploadTab">
-                <h3>Select Collection</h3>
-                <div class="collections-list" id="collectionsList"></div>
-
-                <div class="new-collection-form">
-                    <input type="text" id="newCollectionName" placeholder="New collection name" />
-                    <button onclick="createCollection()">Create</button>
+            <!-- Right Panel: Images Grid -->
+            <div class="right-panel">
+                <div class="section">
+                    <h3>Collection Images</h3>
+                    <div class="images-grid" id="imagesGrid">
+                        <p style="color: #999; font-weight: 700;">← Select a collection</p>
+                    </div>
                 </div>
-
-                <div class="message success" id="collectionMessage"></div>
-
-                <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
-
-                <h3>Upload Image</h3>
-                <div class="resolution-info">
-                    📐 Standard portrait: 156x242 (4x6 monitors @ 0.5 scale)
-                </div>
-
-                <div class="file-input-wrapper">
-                    <input type="file" id="imageFile" accept="image/*" onchange="previewImage(this)" />
-                    <label for="imageFile" class="file-input-label" id="fileLabel">
-                        📁 Click to select image
-                    </label>
-                </div>
-
-                <div class="preview" id="preview">
-                    <img id="previewImg" alt="Preview" />
-                </div>
-
-                <input type="text" id="caption" placeholder="Caption (optional)" />
-
-                <button onclick="uploadImage()" id="uploadBtn" disabled>Upload & Process</button>
-                <div class="message" id="uploadMessage"></div>
-            </div>
-
-            <!-- Manage Tab -->
-            <div class="tab-content" id="manageTab">
-                <h3>Collection Images</h3>
-                <p style="color: #666; margin-bottom: 10px;">Select a collection from the Upload tab first</p>
-                <div class="images-grid" id="imagesGrid"></div>
             </div>
         </div>
     </div>
@@ -453,20 +536,6 @@
                 authenticate();
             }
         });
-
-        function switchTab(tab) {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-
-            if (tab === 'upload') {
-                document.querySelector('.tab:nth-child(1)').classList.add('active');
-                document.getElementById('uploadTab').classList.add('active');
-            } else {
-                document.querySelector('.tab:nth-child(2)').classList.add('active');
-                document.getElementById('manageTab').classList.add('active');
-                if (selectedCollectionId) loadImages();
-            }
-        }
 
         async function authenticate() {
             const input = document.getElementById('passcodeInput');
@@ -523,6 +592,9 @@
             element.classList.add('selected');
             selectedCollectionId = id;
             updateUploadButton();
+
+            // Auto-load images for selected collection
+            loadImages();
         }
 
         async function createCollection() {
@@ -573,6 +645,8 @@
                     // Clear selection if we deleted the selected collection
                     if (selectedCollectionId === collectionId) {
                         selectedCollectionId = null;
+                        // Clear images grid
+                        document.getElementById('imagesGrid').innerHTML = '<p style="color: #999; font-weight: 700;">Select a collection to view images</p>';
                     }
 
                     loadCollections();
@@ -649,6 +723,7 @@
                     document.getElementById('preview').classList.remove('active');
 
                     loadCollections();
+                    loadImages(); // Refresh images grid
                 } else {
                     msgDiv.textContent = `Error: ${data.error}`;
                     msgDiv.className = 'message error active';
@@ -718,8 +793,7 @@
 
                 if (response.ok) {
                     closeModal();
-                    loadImages();
-                    loadCollections();
+                    loadImages(); // Refresh to show updated caption
                 } else {
                     alert('Failed to update caption');
                 }
@@ -738,8 +812,8 @@
                 });
 
                 if (response.ok) {
-                    loadImages();
-                    loadCollections();
+                    loadImages(); // Refresh grid
+                    loadCollections(); // Update image count
                 } else {
                     alert('Failed to delete image');
                 }
