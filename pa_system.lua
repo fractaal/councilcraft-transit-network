@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.3-marquee-constant-fix-persistent-pa"
+local VERSION = "0.2.4-fix-persistent-pa-broadcast"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -489,14 +489,8 @@ local function init()
   log("INFO", "Role: " .. role .. "  Group: " .. group_id)
   if role == "controller" then
     log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
-
-    -- Broadcast persistent PA text to stations if it exists
     if state.pa_active and state.marquee_text then
-      broadcast({
-        type = "pa_begin",
-        marquee_text = state.marquee_text,
-        audio_url = nil,  -- No audio on restore
-      })
+      log("INFO", "Persistent PA will be broadcast via controller loop")
     end
   end
   log("INFO", "Type 'help' for command list.")
@@ -1498,6 +1492,19 @@ local function networkLoop()
           state.controller_present = true
           state.controller_last_seen = os.epoch("utc")
           state.controller_api_base = message.api_base_url or state.controller_api_base
+
+          -- Sync PA state from controller
+          if message.pa_active and message.marquee_text then
+            if state.marquee_text ~= message.marquee_text then
+              state.pa_active = true
+              state.marquee_text = message.marquee_text
+            end
+          elseif not message.pa_active and state.pa_active then
+            -- Controller cleared PA
+            state.pa_active = false
+            state.marquee_text = nil
+          end
+
           os.queueEvent("render_ui")
         elseif role == "controller" then
           if message.controller_id and message.controller_id ~= state.controller_id then
@@ -1553,6 +1560,7 @@ local function controller_broadcast_loop()
       controller_id = state.controller_id,
       now_playing = state.now_playing,
       pa_active = state.pa_active,
+      marquee_text = state.marquee_text,
       paused = state.paused,
     }
     broadcast(payload)
