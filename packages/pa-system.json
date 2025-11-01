@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.8-reboot-on-end",
-  "description": "CouncilCraft PA & Entertainment System controller/station software with autoplay and reboot-on-playlist-end support.",
+  "version": "0.2.9-no-update-loop",
+  "description": "CouncilCraft PA & Entertainment System controller/station software with autoplay and reboot-on-playlist-end support. Auto-update checker removed.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",
