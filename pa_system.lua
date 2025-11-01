@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.6-new-sounds"
+local VERSION = "0.2.8-reboot-on-end"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -61,6 +61,8 @@ local state = {
   update_available = false,
   last_update_error = nil,
   pause_timer = nil,  -- Timer ID for playlist pause entries
+  autoplay_on_start = false,  -- Whether to auto-start playback on controller boot
+  reboot_on_playlist_end = false,  -- Whether to reboot when playlist completes (workaround for freezing)
 }
 
 local speakers = {}
@@ -215,6 +217,8 @@ local function print_help()
   remove <index> - remove track from playlist
   move <from> <to> - reorder tracks
   volume [0.0-3.0] - get/set playback volume
+  autoplay [on|off] - get/set autoplay on startup
+  rebootend [on|off] - reboot when playlist ends
   update - install latest version via composer
   pa "msg" [url] - broadcast PA announcement
   clearpa - clear persistent PA text
@@ -444,6 +448,8 @@ local function init()
     state.current_index = saved_state.current_index or 1
     state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
     state.volume = saved_state.volume or 1.0
+    state.autoplay_on_start = saved_state.autoplay_on_start or false
+    state.reboot_on_playlist_end = saved_state.reboot_on_playlist_end or false
 
     -- Restore persistent PA text if it exists
     if saved_state.persistent_pa_text and saved_state.persistent_pa_text ~= "" then
@@ -509,6 +515,8 @@ local function persist_pa_state()
       api_base_url = state.controller_api_base,
       volume = state.volume,
       persistent_pa_text = state.marquee_text,  -- Save PA text for reboot persistence
+      autoplay_on_start = state.autoplay_on_start,
+      reboot_on_playlist_end = state.reboot_on_playlist_end,
     }
   else
     -- Stations only persist volume
@@ -936,7 +944,16 @@ local function advance_playlist()
     else
       state.current_index = state.current_index + 1
       if state.current_index > #state.playlist then
-        state.current_index = 1
+        if state.reboot_on_playlist_end then
+          -- Playlist complete - reboot instead of wrapping
+          state.current_index = 1
+          persist_pa_state()
+          log("INFO", "Playlist complete - rebooting per rebootend setting...")
+          os.sleep(1)  -- Give time for log to display
+          os.reboot()
+        else
+          state.current_index = 1
+        end
       end
     end
 
@@ -962,7 +979,16 @@ local function advance_playlist()
   else
     state.current_index = state.current_index + 1
     if state.current_index > #state.playlist then
-      state.current_index = 1
+      if state.reboot_on_playlist_end then
+        -- Playlist complete - reboot instead of wrapping
+        state.current_index = 1
+        persist_pa_state()
+        log("INFO", "Playlist complete - rebooting per rebootend setting...")
+        os.sleep(1)  -- Give time for log to display
+        os.reboot()
+      else
+        state.current_index = 1
+      end
     end
   end
 
@@ -1871,6 +1897,44 @@ local function handle_command(line)
         log("INFO", string.format("Volume set to %.1f", state.volume))
       end
     end
+  elseif cmd == "autoplay" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can configure autoplay")
+    elseif rest == "" then
+      log("INFO", string.format("Autoplay on start: %s", state.autoplay_on_start and "on" or "off"))
+    else
+      local value = rest:lower()
+      if value == "on" or value == "true" or value == "1" then
+        state.autoplay_on_start = true
+        persist_pa_state()
+        log("INFO", "Autoplay on start enabled")
+      elseif value == "off" or value == "false" or value == "0" then
+        state.autoplay_on_start = false
+        persist_pa_state()
+        log("INFO", "Autoplay on start disabled")
+      else
+        log("WARN", "Usage: autoplay [on|off]")
+      end
+    end
+  elseif cmd == "rebootend" then
+    if role ~= "controller" then
+      log("WARN", "Only controller can configure reboot on playlist end")
+    elseif rest == "" then
+      log("INFO", string.format("Reboot on playlist end: %s", state.reboot_on_playlist_end and "on" or "off"))
+    else
+      local value = rest:lower()
+      if value == "on" or value == "true" or value == "1" then
+        state.reboot_on_playlist_end = true
+        persist_pa_state()
+        log("INFO", "Reboot on playlist end enabled (workaround for freezing)")
+      elseif value == "off" or value == "false" or value == "0" then
+        state.reboot_on_playlist_end = false
+        persist_pa_state()
+        log("INFO", "Reboot on playlist end disabled")
+      else
+        log("WARN", "Usage: rebootend [on|off]")
+      end
+    end
   elseif cmd == "clear" then
     log_lines = {}
     log("INFO", "Log cleared")
@@ -2092,7 +2156,12 @@ local function supervisorLoop()
 end
 
 local function controller_main()
-  -- Don't auto-play on startup - let user start playback manually
+  -- Auto-play on startup if configured
+  if state.autoplay_on_start and state.playlist and #state.playlist > 0 then
+    log("INFO", "Autoplay enabled - starting playback")
+    start_current_track()
+  end
+
   if update_checker then
     parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop, update_checker)
   else
