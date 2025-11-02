@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Combined controller/station runtime for group-scoped audio + announcements
 
-local VERSION = "0.2.9-no-update-loop"
+local VERSION = "0.2.10-internal-stream-guard"
 local CHANNEL = 143
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
@@ -732,12 +732,23 @@ local function resolve_audio_url(url)
   end
 end
 
-local function build_api_url(path, yt_url)
+local function build_api_url(path, track_url)
+  if type(track_url) ~= "string" or track_url == "" then
+    return nil, "missing track url"
+  end
+
+  if track_url:sub(1, 11) == "internal://" then
+    return nil, "internal track"
+  end
+
   local base = state.controller_api_base or DEFAULT_API_BASE
   if base:sub(-1) == "/" then
     base = base:sub(1, -2)
   end
-  return base .. path .. "?track=" .. textutils.urlEncode(yt_url) .. "&key=" .. textutils.urlEncode(API_KEY)
+
+  local encoded_track = textutils.urlEncode(track_url)
+  local encoded_key = textutils.urlEncode(API_KEY)
+  return base .. path .. "?track=" .. encoded_track .. "&key=" .. encoded_key
 end
 
 local function request_stream(kind, url, context)
@@ -802,7 +813,18 @@ local function request_stream(kind, url, context)
 end
 
 local function request_info(url, index)
-  local info_url = build_api_url("/info", url)
+  local info_url, err = build_api_url("/info", url)
+  if not info_url then
+    if err ~= "internal track" then
+      log("WARN", string.format("Skipping metadata request for track %s (%s)", tostring(url), err or "unknown reason"))
+    end
+    return
+  end
+
+  if pending_requests[info_url] then
+    return
+  end
+
   log("INFO", "HTTP metadata request: " .. info_url)
   pending_requests[info_url] = { kind = "info", index = index, track_url = url }
   http.request(info_url)
@@ -843,8 +865,17 @@ local function start_music_stream(entry)
     log("INFO", "Starting track: " .. (entry.url or "(unknown)"))
   end
 
+  if type(entry.url) ~= "string" or entry.url == "" then
+    log("ERROR", "Cannot start track: playlist entry missing URL")
+    return
+  end
+
   -- Resolve URL to check if it's internal
   local resolved = resolve_audio_url(entry.url)
+  if resolved.type == "error" then
+    log("ERROR", string.format("Cannot start track: %s", resolved.error or "unknown error"))
+    return
+  end
   local is_internal = (resolved.type == "internal")
 
   local stream_url
@@ -853,7 +884,12 @@ local function start_music_stream(entry)
     stream_url = entry.url
   else
     -- For HTTP URLs, build the API streaming URL
-    stream_url = build_api_url("/stream", entry.url)
+    local built_url, err = build_api_url("/stream", entry.url)
+    if not built_url then
+      log("ERROR", string.format("Cannot build stream URL for %s (%s)", tostring(entry.url), err or "unknown reason"))
+      return
+    end
+    stream_url = built_url
   end
 
   broadcast({
@@ -936,13 +972,10 @@ local function advance_playlist()
   end
 
   -- Normal track entry - only request info if we don't already have it
-  if entry.url and not entry.url:sub(1, 11) == "internal://" then
+  if entry.url and entry.url:sub(1, 11) ~= "internal://" then
     -- Only fetch metadata for HTTP URLs
     if not entry.title or not entry.artist then
-      local info_url = build_api_url("/info", entry.url)
-      if not pending_requests[info_url] then
-        request_info(entry.url, state.current_index)
-      end
+      request_info(entry.url, state.current_index)
     end
   end
 

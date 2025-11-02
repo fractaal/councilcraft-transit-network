@@ -1,6 +1,6 @@
 {
   "name": "pa-system",
-  "version": "0.2.9-no-update-loop",
+  "version": "0.2.10-internal-stream-guard",
   "description": "CouncilCraft PA & Entertainment System controller/station software with autoplay and reboot-on-playlist-end support. Auto-update checker removed.",
   "files": [
     {
