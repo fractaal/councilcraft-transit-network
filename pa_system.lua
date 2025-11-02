@@ -1,8 +1,7 @@
 -- CouncilCraft PA & Entertainment System
--- Combined controller/station runtime for group-scoped audio + announcements
+-- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.10-internal-stream-guard"
-local CHANNEL = 143
+local VERSION = "0.2.11-fix-freezes"
 
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
   package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
@@ -28,10 +27,8 @@ local MARQUEE_SCROLL_INTERVAL = 0.15  -- Seconds between marquee scroll ticks
 local CONFIG_PATH = "/.pa_config"
 local STATE_PATH = "/.pa_state"
 
-local modem
-local network_side
-local role
-local group_id
+local decoder = require("cc.audio.dfpwm").make_decoder()
+
 local config
 local state = {
   now_playing = nil,
@@ -41,10 +38,7 @@ local state = {
   playlist = nil,
   loop_mode = "repeat_all",
   current_index = 1,
-  controller_id = nil,
-  controller_present = false,
-  controller_last_seen = 0,
-  controller_api_base = nil,
+  api_base_url = nil,
   paused = false,
   elapsed_seconds = 0,
   track_duration = 0,
@@ -78,6 +72,7 @@ local audio_state = {
 }
 
 local pending_requests = {}
+local http_blockers = 0
 
 local base_term = term.current()
 local term_width, term_height = base_term.getSize()
@@ -106,10 +101,11 @@ local function redraw_logs()
   term.clear()
 
   term.setCursorPos(1, 1)
-  term.write(string.format("PA System v%s  [%s]", VERSION, role))
+  term.write(string.format("PA System v%s  [Standalone]", VERSION))
   term.setCursorPos(1, 2)
 
-  local line2 = string.format("Group: %s", group_id or "?")
+  local api_label = state.api_base_url or DEFAULT_API_BASE
+  local line2 = "API: " .. api_label
   if state.now_playing and audio_state.status == "streaming" and not state.paused then
     local time_str = string.format(" [%s/%s]", format_time(state.elapsed_seconds), format_time(state.track_duration))
     line2 = line2 .. time_str
@@ -191,9 +187,7 @@ local function log(severity, message)
 end
 
 local function print_help()
-  local help_text
-  if role == "controller" then
-    help_text = [[Available commands:
+  local help_text = [[Available commands:
   help - show this help
   status - display current state
   playlist - list playlist entries
@@ -211,18 +205,11 @@ local function print_help()
   autoplay [on|off] - get/set autoplay on startup
   rebootend [on|off] - reboot when playlist ends
   update - install latest version via composer
-  pa "msg" [url] - broadcast PA announcement
+  pa "msg" [url] - play a PA announcement (optional audio URL)
   clearpa - clear persistent PA text
   reload - reload state from disk
   setapi <url> - update API base URL
   clear - clear log window]]
-  else
-    help_text = [[Available commands:
-  help - show this help
-  status - display current state
-  volume [0.0-3.0] - get/set playback volume
-  clear - clear log window]]
-  end
   log("INFO", help_text)
 end
 
@@ -284,36 +271,10 @@ local function input(prompt, default)
   return value
 end
 
-local function choose_role()
-  while true do
-    print("Select mode: (1) Controller  (2) Station")
-    write("> ")
-    local answer = read()
-    if answer == "1" then
-      return "controller"
-    elseif answer == "2" then
-      return "station"
-    end
-    print("Invalid selection. Try again.")
-  end
-end
-
-local function list_peripheral_by_type(peripheral_type)
-  local matches = {}
-  for _, name in ipairs(peripheral.getNames()) do
-    if peripheral.getType(name) == peripheral_type then
-      table.insert(matches, name)
-    end
-  end
-  return matches
-end
-
 local function ensure_pa_state()
   if fs.exists(STATE_PATH) then
     local tbl = load_table(STATE_PATH)
     if tbl then
-      -- Return existing state even if playlist is missing/malformed
-      -- This preserves other saved fields like persistent_pa_text
       if not tbl.playlist or type(tbl.playlist) ~= "table" then
         tbl.playlist = {}
       end
@@ -321,9 +282,7 @@ local function ensure_pa_state()
     end
   end
 
-  -- Only create default state if file doesn't exist or is corrupted
   local default_state = {
-    group_id = group_id,
     playlist = {
       {
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -336,7 +295,7 @@ local function ensure_pa_state()
     },
     loop_mode = "repeat_all",
     current_index = 1,
-    api_base_url = state.controller_api_base or DEFAULT_API_BASE,
+    api_base_url = state.api_base_url or DEFAULT_API_BASE,
   }
 
   save_table(STATE_PATH, default_state)
@@ -344,59 +303,36 @@ local function ensure_pa_state()
 end
 
 local function persistence_setup()
-  config = load_table(CONFIG_PATH)
-  if config then
-    role = config.role
-    group_id = config.group_id
-    network_side = config.network_modem_side
-    return
+  config = load_table(CONFIG_PATH) or {}
+
+  if config.api_base_url and config.api_base_url ~= "" then
+    state.api_base_url = config.api_base_url
   end
 
-  term.clear()
-  term.setCursorPos(1, 1)
-  print("CouncilCraft PA System v" .. VERSION)
-  print("First-time setup")
-  print("")
+  if not state.api_base_url then
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("CouncilCraft PA System v" .. VERSION)
+    print("First-time setup")
+    print("")
 
-  role = choose_role()
-
-  group_id = input("Enter group id", "main")
-
-  local modem_names = list_peripheral_by_type("modem")
-  if #modem_names == 0 then
-    error("No modem peripherals detected. A modem is required.")
-  end
-
-  print("Detected modems: " .. table.concat(modem_names, ", "))
-  network_side = input("Enter modem side/name for PA signalling", modem_names[1])
-
-  config = {
-    role = role,
-    group_id = group_id,
-    network_modem_side = network_side,
-  }
-
-  if role == "controller" then
-    config.has_local_audio = input("Does this controller have local speakers? (y/N)", "N"):lower() == "y"
     local api_base = input("Enter streaming API base URL (without trailing slash)", DEFAULT_API_BASE)
-    state.controller_api_base = api_base
-  end
+    if not api_base or api_base == "" then
+      api_base = DEFAULT_API_BASE
+    end
 
-  persist_config()
+    state.api_base_url = api_base
+    config.api_base_url = api_base
+    persist_config()
+  end
 end
 
 local function refresh_peripherals()
   speakers = {}
   monitors = {}
 
-  if role == "controller" and config.has_local_audio then
-    for _, speaker in ipairs({ peripheral.find("speaker") }) do
-      table.insert(speakers, speaker)
-    end
-  elseif role == "station" then
-    for _, speaker in ipairs({ peripheral.find("speaker") }) do
-      table.insert(speakers, speaker)
-    end
+  for _, speaker in ipairs({ peripheral.find("speaker") }) do
+    table.insert(speakers, speaker)
   end
 
   for _, monitor in ipairs({ peripheral.find("monitor") }) do
@@ -404,11 +340,8 @@ local function refresh_peripherals()
     table.insert(monitors, monitor)
   end
 
-  if role == "controller" and config.has_local_audio and #speakers == 0 then
-    log("WARN", "Controller configured for local audio but no speakers detected.")
-  end
-  if role == "station" and #speakers == 0 then
-    log("WARN", "Station has no speakers. Audio playback will be muted.")
+  if #speakers == 0 then
+    log("WARN", "No speakers detected. Audio playback will be muted.")
   end
 end
 
@@ -417,34 +350,24 @@ end
 local function init()
   persistence_setup()
 
-  if role == "controller" then
-    local saved_state = ensure_pa_state()
-    state.playlist = saved_state.playlist or {}
-    state.loop_mode = saved_state.loop_mode or "repeat_all"
-    state.current_index = saved_state.current_index or 1
-    state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
-    state.volume = saved_state.volume or 1.0
-    state.autoplay_on_start = saved_state.autoplay_on_start or false
-    state.reboot_on_playlist_end = saved_state.reboot_on_playlist_end or false
+  local saved_state = ensure_pa_state()
+  state.playlist = saved_state.playlist or {}
+  state.loop_mode = saved_state.loop_mode or "repeat_all"
+  state.current_index = saved_state.current_index or 1
+  state.api_base_url = saved_state.api_base_url or state.api_base_url or DEFAULT_API_BASE
+  state.volume = saved_state.volume or 1.0
+  state.autoplay_on_start = saved_state.autoplay_on_start or false
+  state.reboot_on_playlist_end = saved_state.reboot_on_playlist_end or false
 
-    -- Restore persistent PA text if it exists
-    if saved_state.persistent_pa_text and saved_state.persistent_pa_text ~= "" then
-      state.marquee_text = saved_state.persistent_pa_text
-      state.pa_active = true
-      -- Note: schedule_marquee() and render will happen after init completes
-      log("INFO", "Restored PA text: " .. saved_state.persistent_pa_text)
-    end
-  else
-    -- Stations get API base from controller broadcasts
-    state.controller_api_base = DEFAULT_API_BASE
+  if not config.api_base_url or config.api_base_url == "" then
+    config.api_base_url = state.api_base_url
+    persist_config()
+  end
 
-    -- Load volume if saved
-    if fs.exists(STATE_PATH) then
-      local saved_state = load_table(STATE_PATH)
-      if saved_state then
-        state.volume = saved_state.volume or 1.0
-      end
-    end
+  if saved_state.persistent_pa_text and saved_state.persistent_pa_text ~= "" then
+    state.marquee_text = saved_state.persistent_pa_text
+    state.pa_active = true
+    log("INFO", "Restored PA text: " .. saved_state.persistent_pa_text)
   end
 
   local prev = term.redirect(base_term)
@@ -458,56 +381,26 @@ local function init()
 
   refresh_peripherals()
 
-  modem = peripheral.wrap(network_side)
-  if not modem then
-    error("Unable to wrap modem on " .. tostring(network_side))
-  end
-  if not modem.isOpen(CHANNEL) then
-    modem.open(CHANNEL)
-  end
-
-  state.controller_id = os.getComputerID()
-  state.controller_last_seen = os.epoch("utc")
-  log("INFO", "Role: " .. role .. "  Group: " .. group_id)
-  if role == "controller" then
-    log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
-    if state.pa_active and state.marquee_text then
-      log("INFO", "Persistent PA will be broadcast via controller loop")
-    end
-  end
+  log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
   log("INFO", "Type 'help' for command list.")
 end
 
 local function persist_pa_state()
-  local now = {}
-
-  if role == "controller" then
-    now = {
-      group_id = group_id,
-      playlist = state.playlist,
-      loop_mode = state.loop_mode,
-      current_index = state.current_index,
-      api_base_url = state.controller_api_base,
-      volume = state.volume,
-      persistent_pa_text = state.marquee_text,  -- Save PA text for reboot persistence
-      autoplay_on_start = state.autoplay_on_start,
-      reboot_on_playlist_end = state.reboot_on_playlist_end,
-    }
-  else
-    -- Stations only persist volume
-    now = {
-      volume = state.volume,
-    }
-  end
+  local now = {
+    playlist = state.playlist,
+    loop_mode = state.loop_mode,
+    current_index = state.current_index,
+    api_base_url = state.api_base_url,
+    volume = state.volume,
+    persistent_pa_text = state.marquee_text,
+    autoplay_on_start = state.autoplay_on_start,
+    reboot_on_playlist_end = state.reboot_on_playlist_end,
+  }
 
   save_table(STATE_PATH, now)
 end
 
 local function reload_state()
-  if role ~= "controller" then
-    log("WARN", "Only controllers can reload playlist state.")
-    return
-  end
   local saved_state = load_table(STATE_PATH)
   if not saved_state then
     log("ERROR", "Unable to read " .. STATE_PATH)
@@ -516,7 +409,7 @@ local function reload_state()
   state.playlist = saved_state.playlist or {}
   state.loop_mode = saved_state.loop_mode or "repeat_all"
   state.current_index = saved_state.current_index or 1
-  state.controller_api_base = saved_state.api_base_url or state.controller_api_base or DEFAULT_API_BASE
+  state.api_base_url = saved_state.api_base_url or state.api_base_url or DEFAULT_API_BASE
   log("INFO", string.format("Reloaded playlist (%d entries)", #(state.playlist or {})))
   os.queueEvent("render_ui")
 end
@@ -705,13 +598,13 @@ end
 local function clear_marquee()
   state.pa_active = false
   state.marquee_text = nil
-  state.marquee_rows_state["pa"] = nil
+  if state.marquee_rows_state then
+    state.marquee_rows_state["pa"] = nil
+  end
   os.queueEvent("render_ui")
 
   -- Clear persistent PA text
-  if role == "controller" then
-    persist_pa_state()
-  end
+  persist_pa_state()
 end
 
 local function resolve_audio_url(url)
@@ -741,7 +634,7 @@ local function build_api_url(path, track_url)
     return nil, "internal track"
   end
 
-  local base = state.controller_api_base or DEFAULT_API_BASE
+  local base = state.api_base_url or DEFAULT_API_BASE
   if base:sub(-1) == "/" then
     base = base:sub(1, -2)
   end
@@ -793,7 +686,7 @@ local function request_stream(kind, url, context)
     audio_state.start = header
     audio_state.chunk_size = 16 * 1024 - 4
     audio_state.consecutive_failures = 0
-    audio_state.decoder = require("cc.audio.dfpwm").make_decoder()
+    audio_state.decoder = decoder
 
     if kind == "music" then
       start_time_tracker()
@@ -821,18 +714,64 @@ local function request_info(url, index)
     return
   end
 
-  if pending_requests[info_url] then
+  log("INFO", "Fetching metadata: " .. info_url)
+
+  http_blockers = http_blockers + 1
+  local ok, response, err = pcall(http.get, info_url)
+  http_blockers = math.max(0, http_blockers - 1)
+
+  if not ok then
+    log("WARN", "Metadata request threw error: " .. tostring(response))
     return
   end
 
-  log("INFO", "HTTP metadata request: " .. info_url)
-  pending_requests[info_url] = { kind = "info", index = index, track_url = url }
-  http.request(info_url)
-end
+  if not response then
+    log("WARN", "Metadata request failed: " .. (err or info_url))
+    return
+  end
 
-local function broadcast(message)
-  message.group_id = group_id
-  modem.transmit(CHANNEL, CHANNEL, message)
+  local body = response.readAll()
+  response.close()
+
+  if not body or body == "" then
+    log("WARN", "Metadata response empty for " .. info_url)
+    return
+  end
+
+  local ok, data = pcall(textutils.unserialiseJSON, body)
+  if not ok or not data then
+    log("WARN", "Unable to parse metadata for track " .. tostring(url))
+    return
+  end
+
+  local entry = state.playlist and state.playlist[index]
+  if not entry then
+    return
+  end
+
+  local updated = false
+  if data.title and data.title ~= "" then
+    entry.title = data.title
+    updated = true
+  end
+  if data.channel and data.channel ~= "" then
+    entry.artist = data.channel
+    updated = true
+  end
+  if data.durationSeconds then
+    entry.duration = data.durationSeconds
+    updated = true
+  end
+
+  if updated then
+    persist_pa_state()
+    if state.now_playing and state.now_playing.url == entry.url then
+      state.now_playing.title = entry.title
+      state.now_playing.artist = entry.artist
+      state.track_duration = entry.duration or 0
+      os.queueEvent("render_ui")
+    end
+  end
 end
 
 local function snapshot_current_track()
@@ -892,16 +831,6 @@ local function start_music_stream(entry)
     stream_url = built_url
   end
 
-  broadcast({
-    type = "music_start",
-    track_url = entry.url,
-    title = entry.title,
-    artist = entry.artist,
-    stream_url = stream_url,
-    is_internal = is_internal,
-    started_at = os.epoch("utc"),
-  })
-
   if #speakers > 0 then
     stop_audio()
 
@@ -922,7 +851,6 @@ end
 local function advance_playlist()
   if not state.playlist or #state.playlist == 0 then
     state.now_playing = nil
-    broadcast({ type = "music_stop" })
     os.queueEvent("render_ui")
     log("WARN", "Playlist empty; nothing to play")
     return
@@ -942,7 +870,6 @@ local function advance_playlist()
     -- Clear now playing and stop audio
     state.now_playing = nil
     state.paused = false
-    broadcast({ type = "music_stop" })
     os.queueEvent("render_ui")
 
     -- Start pause timer
@@ -1003,10 +930,6 @@ local function advance_playlist()
 end
 
 local function start_current_track()
-  if role ~= "controller" then
-    log("WARN", "Only controllers can start playback.")
-    return
-  end
   if not state.playlist or #state.playlist == 0 then
     log("WARN", "Playlist empty; nothing to play")
     return
@@ -1032,7 +955,6 @@ local function start_current_track()
 end
 
 local function stop_music()
-  broadcast({ type = "music_stop" })
   stop_audio()
 end
 
@@ -1092,13 +1014,6 @@ local function pause_music()
   end
 
   state.paused = true
-  broadcast({
-    type = "music_pause",
-    track_url = state.now_playing.url,
-    title = state.now_playing.title,
-    artist = state.now_playing.artist,
-    duration = state.track_duration,
-  })
   stop_audio()
   os.queueEvent("render_ui")
   return true, "Playback paused"
@@ -1142,11 +1057,9 @@ local function begin_pa(marquee_text, audio_url)
   os.queueEvent("render_ui")
 
   -- Persist PA text so it survives reboots
-  if role == "controller" then
-    persist_pa_state()
-  end
+  persist_pa_state()
 
-  log("INFO", "Broadcasting PA: " .. marquee_text)
+  log("INFO", "Starting PA: " .. marquee_text)
 
   if has_audio then
     local ok = pause_music()
@@ -1155,12 +1068,6 @@ local function begin_pa(marquee_text, audio_url)
       state.pa_resume_context = nil
     end
   end
-
-  broadcast({
-    type = "pa_begin",
-    marquee_text = marquee_text,
-    audio_url = audio_url,
-  })
 
   if has_audio and #speakers > 0 then
     queue_pa_sequence(audio_url)
@@ -1416,216 +1323,6 @@ local function handle_pa_complete()
   end
 end
 
-local function handle_station_music_start(message)
-  state.now_playing = {
-    url = message.track_url,
-    title = message.title,
-    artist = message.artist,
-  }
-  state.controller_present = true
-  state.controller_last_seen = os.epoch("utc")
-  state.paused = false
-  os.queueEvent("render_ui")
-  schedule_marquee()
-
-  local stream_indicator = message.is_internal and "internal" or "http"
-  log("INFO", string.format("Controller started track: %s (%s) [%s]", message.title or message.track_url or "(unknown)", message.track_url or "", stream_indicator))
-
-  if #speakers == 0 then
-    return
-  end
-
-  stop_audio()
-
-  -- Wait for audio to actually stop before starting new stream
-  while audio_state.status ~= "idle" do
-    os.pullEvent("audio_update")
-  end
-
-  audio_state.active_speakers = {}
-  audio_state.mode = "music"
-  audio_state.status = "waiting"
-  audio_state.url = message.stream_url
-  audio_state.stop_requested = false  -- Clear any pending stop for new stream
-  request_stream("music", message.stream_url, { label = "music" })
-end
-
-local function handle_station_music_stop()
-  stop_audio()
-  state.now_playing = nil
-  state.paused = false
-  os.queueEvent("render_ui")
-  log("INFO", "Controller stopped music")
-end
-
-local function handle_station_music_pause(message)
-  state.paused = true
-  stop_audio()
-
-  if message and message.track_url then
-    state.now_playing = {
-      url = message.track_url,
-      title = message.title,
-      artist = message.artist,
-    }
-    state.track_duration = message.duration or state.track_duration
-  end
-
-  os.queueEvent("render_ui")
-  log("INFO", "Controller paused music")
-end
-
-local function handle_station_pa_begin(message)
-  state.pa_active = true
-  state.marquee_text = message.marquee_text
-  schedule_marquee()
-  os.queueEvent("render_ui")
-
-  log("INFO", "PA received: " .. message.marquee_text)
-
-  local has_audio = message.audio_url and message.audio_url ~= ""
-  if has_audio then
-    stop_audio()
-
-  if #speakers > 0 then
-    -- Wait for audio to actually stop before starting PA sequence
-    while audio_state.status ~= "idle" do
-      os.pullEvent("audio_update")
-    end
-
-    audio_state.active_speakers = {}
-    audio_state.mode = "pa"
-    audio_state.status = "waiting"
-    audio_state.queue = {}
-    audio_state.stop_requested = false  -- Clear any pending stop
-    table.insert(audio_state.queue, { label = "chime", url = CHIME_URL })
-    if message.audio_url and message.audio_url ~= "" then
-      table.insert(audio_state.queue, { label = "announcement", url = message.audio_url })
-    end
-    start_next_audio_in_queue()
-  end
-  end
-end
-
-local function handle_station_pa_end()
-  clear_marquee()
-  log("INFO", "PA cleared")
-end
-
-local function networkLoop()
-  while true do
-    local _, side, channel, reply_channel, message = os.pullEvent("modem_message")
-    if side == network_side and channel == CHANNEL and type(message) == "table" then
-      if message.group_id ~= group_id then
-        goto continue
-      end
-
-      if message.type == "controller_announce" then
-        if role == "station" then
-          state.controller_present = true
-          state.controller_last_seen = os.epoch("utc")
-          state.controller_api_base = message.api_base_url or state.controller_api_base
-
-          -- Sync PA state from controller
-          if message.pa_active and message.marquee_text then
-            if state.marquee_text ~= message.marquee_text then
-              state.pa_active = true
-              state.marquee_text = message.marquee_text
-            end
-          elseif not message.pa_active and state.pa_active then
-            -- Controller cleared PA
-            state.pa_active = false
-            state.marquee_text = nil
-          end
-
-          os.queueEvent("render_ui")
-        elseif role == "controller" then
-          if message.controller_id and message.controller_id ~= state.controller_id then
-            log("ERROR", "Another controller with group " .. group_id .. " detected. Halting.")
-            error("Controller conflict on group " .. group_id, 0)
-          end
-        end
-      elseif message.type == "music_start" then
-        if role == "station" then
-          handle_station_music_start(message)
-        end
-      elseif message.type == "music_stop" then
-        if role == "station" then
-          handle_station_music_stop()
-        else
-          state.paused = false
-        end
-      elseif message.type == "music_pause" then
-        if role == "station" then
-          handle_station_music_pause(message)
-        else
-          state.paused = true
-          os.queueEvent("render_ui")
-        end
-      elseif message.type == "pa_begin" then
-        if role == "station" then
-          handle_station_pa_begin(message)
-        else
-          state.pa_active = true
-          state.marquee_text = message.marquee_text
-          schedule_marquee()
-          os.queueEvent("render_ui")
-        end
-      elseif message.type == "pa_end" then
-        if role == "station" then
-          handle_station_pa_end()
-        else
-          clear_marquee()
-        end
-      elseif message.type == "station_register" and role == "controller" then
-        log("Station registered: " .. tostring(message.station_id or "unknown"))
-      end
-    end
-    ::continue::
-  end
-end
-
-local function controller_broadcast_loop()
-  while true do
-    local payload = {
-      type = "controller_announce",
-      api_base_url = state.controller_api_base,
-      controller_id = state.controller_id,
-      now_playing = state.now_playing,
-      pa_active = state.pa_active,
-      marquee_text = state.marquee_text,
-      paused = state.paused,
-    }
-    broadcast(payload)
-    os.sleep(1)
-  end
-end
-
-local function station_register()
-  broadcast({
-    type = "station_register",
-    station_id = os.getComputerID(),
-    has_speakers = #speakers > 0,
-  })
-end
-
-local function station_watchdog_loop()
-  while true do
-    os.sleep(5)
-    if role ~= "station" then
-      return
-    end
-    local now = os.epoch("utc")
-    if now - state.controller_last_seen > 6000 then
-      if state.controller_present then
-        state.controller_present = false
-        os.queueEvent("render_ui")
-        log("WARN", "Controller heartbeat timed out")
-      end
-    end
-  end
-end
-
 local function handle_command(line)
   local trimmed = line:gsub("^%s+", ""):gsub("%s+$", "")
   if trimmed == "" then
@@ -1646,8 +1343,8 @@ local function handle_command(line)
     print_help()
   elseif cmd == "status" then
     local parts = {
-      "role=" .. role,
-      "group=" .. group_id,
+      "api=" .. (state.api_base_url or DEFAULT_API_BASE),
+      string.format("playlist=%d", state.playlist and #state.playlist or 0),
     }
     if state.now_playing then
       table.insert(parts, string.format("now_playing=%s", state.now_playing.title or state.now_playing.url or "(unknown)"))
@@ -1659,11 +1356,16 @@ local function handle_command(line)
     else
       table.insert(parts, "pa=idle")
     end
+    if state.paused then
+      table.insert(parts, "playback=paused")
+    elseif audio_state.status == "streaming" then
+      table.insert(parts, "playback=streaming")
+    else
+      table.insert(parts, "playback=idle")
+    end
     log("INFO", "Status: " .. table.concat(parts, " | "))
   elseif cmd == "playlist" then
-    if role ~= "controller" then
-      log("WARN", "Playlist view only available to controller")
-    elseif not state.playlist or #state.playlist == 0 then
+    if not state.playlist or #state.playlist == 0 then
       log("WARN", "Playlist empty")
     else
       for index, entry in ipairs(state.playlist) do
@@ -1679,50 +1381,33 @@ local function handle_command(line)
       end
     end
   elseif cmd == "next" then
-    if role == "controller" then
-      advance_playlist()
-    else
-      log("WARN", "Only controller can skip tracks")
-    end
+    advance_playlist()
   elseif cmd == "stop" then
-    if role == "controller" then
-      stop_music()
-      state.now_playing = nil
-      os.queueEvent("render_ui")
-      log("INFO", "Playback stopped")
-    else
-      log("WARN", "Only controller can stop playback")
-    end
+    stop_music()
+    state.now_playing = nil
+    state.paused = false
+    os.queueEvent("render_ui")
+    log("INFO", "Playback stopped")
   elseif cmd == "play" then
-    if role == "controller" then
-      if state.paused then
-        local ok, message = resume_paused_track()
-        if ok then
-          log("INFO", message)
-        else
-          log("WARN", message)
-        end
-      else
-        start_current_track()
-      end
-    else
-      log("WARN", "Only controller can start playback")
-    end
-  elseif cmd == "pause" then
-    if role == "controller" then
-      local ok, message = pause_music()
+    if state.paused then
+      local ok, message = resume_paused_track()
       if ok then
         log("INFO", message)
       else
         log("WARN", message)
       end
     else
-      log("WARN", "Only controller can pause playback")
+      start_current_track()
+    end
+  elseif cmd == "pause" then
+    local ok, message = pause_music()
+    if ok then
+      log("INFO", message)
+    else
+      log("WARN", message)
     end
   elseif cmd == "goto" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can jump to tracks")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", "Usage: goto <index>")
     else
       local index = tonumber(rest)
@@ -1737,9 +1422,7 @@ local function handle_command(line)
       end
     end
   elseif cmd == "move" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can modify playlist")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", "Usage: move <from> <to>")
     else
       local from, to = rest:match("^(%d+)%s+(%d+)$")
@@ -1773,35 +1456,24 @@ local function handle_command(line)
       end
     end
   elseif cmd == "pa" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can send announcements")
+    if rest == "" then
+      log("WARN", 'Usage: pa "Message" [audio_url]')
     else
-      if rest == "" then
-        log("WARN", 'Usage: pa "Message" [audio_url]')
+      local text, audio = rest:match('^"(.-)"%s*(.*)$')
+      if not text or text == "" then
+        log("WARN", 'PA text must be wrapped in quotes. Example: pa "Mind the gap" https://...')
       else
-        local text, audio = rest:match('^"(.-)"%s*(.*)$')
-        if not text or text == "" then
-          log("WARN", 'PA text must be wrapped in quotes. Example: pa "Mind the gap" https://...')
-        else
-          if audio == "" then
-            audio = nil
-          end
-          begin_pa(text, audio)
+        if audio == "" then
+          audio = nil
         end
+        begin_pa(text, audio)
       end
     end
   elseif cmd == "clearpa" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can clear PA announcements")
-    else
-      broadcast({ type = "pa_end" })
-      clear_marquee()
-      log("INFO", "PA text cleared")
-    end
+    clear_marquee()
+    log("INFO", "PA text cleared")
   elseif cmd == "add" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can modify playlist")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", "Usage: add <url>")
     else
       local track_url = rest:match("^%s*(.-)%s*$")  -- trim whitespace
@@ -1815,19 +1487,13 @@ local function handle_command(line)
       end
     end
   elseif cmd == "addpause" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can modify playlist")
-    else
-      local duration = tonumber(rest) or DEFAULT_PAUSE_DURATION
-      local entry = { type = "pause", duration = duration }
-      table.insert(state.playlist, entry)
-      persist_pa_state()
-      log("INFO", string.format("Added pause entry #%d: %d seconds", #state.playlist, duration))
-    end
+    local duration = tonumber(rest) or DEFAULT_PAUSE_DURATION
+    local entry = { type = "pause", duration = duration }
+    table.insert(state.playlist, entry)
+    persist_pa_state()
+    log("INFO", string.format("Added pause entry #%d: %d seconds", #state.playlist, duration))
   elseif cmd == "edittitle" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can modify playlist")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", 'Usage: edittitle <index> "new title"')
     else
       local index, title = rest:match('^(%d+)%s+"(.-)"$')
@@ -1847,9 +1513,7 @@ local function handle_command(line)
       end
     end
   elseif cmd == "remove" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can modify playlist")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", "Usage: remove <index>")
     else
       local index = tonumber(rest)
@@ -1869,14 +1533,15 @@ local function handle_command(line)
   elseif cmd == "reload" then
     reload_state()
   elseif cmd == "setapi" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can change API base URL")
-    elseif rest == "" then
+    if rest == "" then
       log("WARN", "Usage: setapi <url>")
     else
-      state.controller_api_base = rest
+      local trimmed_url = rest:gsub("^%s+", ""):gsub("%s+$", "")
+      state.api_base_url = trimmed_url
+      config.api_base_url = trimmed_url
+      persist_config()
       persist_pa_state()
-      log("INFO", "API base updated to " .. rest)
+      log("INFO", "API base updated to " .. trimmed_url)
     end
   elseif cmd == "volume" then
     if rest == "" then
@@ -1892,9 +1557,7 @@ local function handle_command(line)
       end
     end
   elseif cmd == "autoplay" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can configure autoplay")
-    elseif rest == "" then
+    if rest == "" then
       log("INFO", string.format("Autoplay on start: %s", state.autoplay_on_start and "on" or "off"))
     else
       local value = rest:lower()
@@ -1911,9 +1574,7 @@ local function handle_command(line)
       end
     end
   elseif cmd == "rebootend" then
-    if role ~= "controller" then
-      log("WARN", "Only controller can configure reboot on playlist end")
-    elseif rest == "" then
+    if rest == "" then
       log("INFO", string.format("Reboot on playlist end: %s", state.reboot_on_playlist_end and "on" or "off"))
     else
       local value = rest:lower()
@@ -2020,6 +1681,9 @@ end
 
 local function httpLoop()
   while true do
+    if http_blockers > 0 or next(pending_requests) == nil then
+      os.sleep(0.05)
+    else
     parallel.waitForAny(
       function()
         local _, url, handle = os.pullEvent("http_success")
@@ -2030,99 +1694,64 @@ local function httpLoop()
           if handle and handle.close then
             handle.close()
           else
-            log("WARN", "HTTP request to" .. url .. " completed but no pending request found (handle couldn't be closed)")
+            log("WARN", "HTTP request to " .. tostring(url) .. " completed but no pending request found")
           end
           return
         end
 
-        if request.kind == "info" then
-          local body = handle.readAll()
-          handle.close()
-          log("INFO", string.format("Metadata response (%s): %s", request.track_url or "?", body or ""))
-          local ok, data = pcall(textutils.unserialiseJSON, body)
-          if ok and data then
-            local entry = state.playlist and state.playlist[request.index]
-            if entry then
-              entry.title = data.title or entry.title
-              entry.artist = data.channel or entry.artist
-              entry.duration = data.durationSeconds or entry.duration
-              persist_pa_state()
-              if state.now_playing and state.now_playing.url == entry.url then
-                state.now_playing.title = entry.title
-                state.now_playing.artist = entry.artist
-                state.track_duration = entry.duration or 0
-                os.queueEvent("render_ui")
-              end
-            end
-          end
-        elseif request.kind == "music" or request.kind == "pa" then
-          log("INFO", string.format("Stream ready (%s): %s", request.label or request.kind, url))
-          audio_state.handle = handle
-          audio_state.status = "streaming"
-          audio_state.start = handle.read(4)
-          audio_state.chunk_size = 16 * 1024 - 4
-          audio_state.consecutive_failures = 0
-          -- Create new decoder for this stream
-          audio_state.decoder = require("cc.audio.dfpwm").make_decoder()
-          if request.kind == "music" then
-            start_time_tracker()
-          end
-          os.queueEvent("audio_update")
-        else
-          handle.close()
+        log("INFO", string.format("Stream ready (%s): %s", request.label or request.kind, url))
+        audio_state.handle = handle
+        audio_state.status = "streaming"
+        audio_state.start = handle.read(4)
+        audio_state.chunk_size = 16 * 1024 - 4
+        audio_state.consecutive_failures = 0
+        audio_state.decoder = decoder
+        if request.kind == "music" then
+          start_time_tracker()
         end
+        os.queueEvent("audio_update")
       end,
       function()
         local _, url, err, handle = os.pullEvent("http_failure")
         local request = pending_requests[url]
         pending_requests[url] = nil
-        if request and (request.kind == "music" or request.kind == "pa") then
-          local detail = err and (" - " .. err) or ""
-          local body
-          if handle then
-            body = handle.readAll()
+        if not request then
+          if handle and handle.close then
             handle.close()
           end
-          if body and body ~= "" then
-            detail = detail .. " | BODY: " .. body
-          end
-          log("ERROR", string.format("Failed to fetch %s stream (%s)%s", request.label or request.kind, url, detail))
+          return
+        end
 
-          audio_state.consecutive_failures = audio_state.consecutive_failures + 1
+        local detail = err and (" - " .. err) or ""
+        local body
+        if handle then
+          body = handle.readAll()
+          handle.close()
+        end
+        if body and body ~= "" then
+          detail = detail .. " | BODY: " .. body
+        end
+        log("ERROR", string.format("Failed to fetch %s stream (%s)%s", request.label or request.kind, url, detail))
 
-          if audio_state.consecutive_failures >= 3 then
-            log("ERROR", "Too many consecutive failures - stopping playback")
-            stop_audio()
-            if request.kind == "music" then
-              state.now_playing = nil
-              os.queueEvent("render_ui")
-            elseif request.kind == "pa" then
-              if role == "controller" then
-                complete_pa_audio()
-              else
-                clear_marquee()
-              end
-            end
-          else
-            stop_audio()
-            if request.kind == "music" then
-              if role == "controller" then
-                os.queueEvent("music_stream_complete")  -- Let supervisorLoop handle it async
-              else
-                state.now_playing = nil
-                os.queueEvent("render_ui")
-              end
-            elseif request.kind == "pa" then
-              if role == "controller" then
-                complete_pa_audio()
-              else
-                clear_marquee()
-              end
-            end
+        audio_state.consecutive_failures = audio_state.consecutive_failures + 1
+        stop_audio()
+
+        if request.kind == "music" then
+          state.now_playing = nil
+          os.queueEvent("render_ui")
+          if audio_state.consecutive_failures < 3 then
+            os.queueEvent("music_stream_complete")
           end
+        elseif request.kind == "pa" then
+          complete_pa_audio()
+        end
+
+        if audio_state.consecutive_failures >= 3 then
+          log("ERROR", "Too many consecutive failures - halting retries")
         end
       end
     )
+    end
   end
 end
 
@@ -2130,45 +1759,30 @@ local function supervisorLoop()
   while true do
     local event = { os.pullEvent() }
     local name = event[1]
-    if name == "music_stream_complete" and role == "controller" then
+    if name == "music_stream_complete" then
       handle_music_complete()
-    elseif name == "pa_sequence_complete" and role == "controller" then
+    elseif name == "pa_sequence_complete" then
       complete_pa_audio()
     elseif name == "timer" then
       local timer_id = event[2]
-      -- Handle playlist pause timer
       if state.pause_timer and timer_id == state.pause_timer then
         state.pause_timer = nil
-        if role == "controller" then
-          log("INFO", "Pause complete, advancing playlist")
-          advance_playlist()
-        end
+        log("INFO", "Pause complete, advancing playlist")
+        advance_playlist()
       end
-      -- Other timers handled elsewhere (marquee, time_update)
     end
   end
 end
 
-local function controller_main()
-  -- Auto-play on startup if configured
+local function main()
   if state.autoplay_on_start and state.playlist and #state.playlist > 0 then
     log("INFO", "Autoplay enabled - starting playback")
     start_current_track()
   end
 
-  parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, controller_broadcast_loop, supervisorLoop)
-end
-
-local function station_main()
-  station_register()
-  parallel.waitForAny(commandLoop, uiLoop, audioLoop, networkLoop, httpLoop, supervisorLoop, station_watchdog_loop)
+  parallel.waitForAny(commandLoop, uiLoop, audioLoop, httpLoop, supervisorLoop)
 end
 
 init()
 render_monitors()
-
-if role == "controller" then
-  controller_main()
-else
-  station_main()
-end
+main()
