@@ -3,6 +3,8 @@
 
 local VERSION = "0.2.11-fix-freezes"
 
+local dfpwm = require("cc.audio.dfpwm")
+
 if not package.path:find("/lib/%.%?%.lua", 1, true) then
   package.path = "/lib/?.lua;/lib/?/init.lua;" .. package.path
 end
@@ -27,7 +29,7 @@ local MARQUEE_SCROLL_INTERVAL = 0.15  -- Seconds between marquee scroll ticks
 local CONFIG_PATH = "/.pa_config"
 local STATE_PATH = "/.pa_state"
 
-local decoder = require("cc.audio.dfpwm").make_decoder()
+local DEBUG = true
 
 local config
 local state = {
@@ -644,40 +646,65 @@ local function build_api_url(path, track_url)
   return base .. path .. "?track=" .. encoded_track .. "&key=" .. encoded_key
 end
 
+-- Global debug flag (expected in config table)
+
+local function debug(msg, ...)
+  if DEBUG then
+    local out = "[DEBUG] " .. msg
+    if select('#', ...) > 0 then
+      out = string.format(out, ...)
+    end
+    log("DEBUG", out)
+  end
+end
+
 local function request_stream(kind, url, context)
+  debug("request_stream called with kind=%s url=%s context=%s", tostring(kind), tostring(url), textutils.serialize(context))
+
   context = context or {}
   context.kind = kind
 
   -- Resolve URL to check if it's internal or HTTP
+  debug("Resolving audio URL: %s", tostring(url))
   local resolved = resolve_audio_url(url)
+  debug("Resolved type: %s", tostring(resolved and resolved.type or "nil"))
 
   if resolved.type == "internal" then
     -- Handle internal file directly
     log("INFO", string.format("Opening internal file (%s): %s", kind, resolved.path))
+    debug("Attempting fs.open on: %s", resolved.path)
 
     local ok, file_handle = pcall(fs.open, resolved.path, "rb")
+    debug("fs.open result: ok=%s, file_handle=%s", tostring(ok), tostring(file_handle))
     if not ok or not file_handle then
       log("ERROR", "Failed to open internal file: " .. resolved.path)
       audio_state.status = "idle"
+      debug("FAILED: open file_handle")
       return
     end
 
     -- Validate handle has required methods
+    debug("Checking file_handle methods (read/close)")
     if not file_handle.read or not file_handle.close then
       log("ERROR", "Invalid file handle for: " .. resolved.path)
+      debug("FAILED: missing method read/close on file_handle")
       pcall(function() file_handle.close() end)
       audio_state.status = "idle"
       return
     end
 
     -- Set up audio state for streaming from local file
+    debug("Setting up audio_state for streaming: set handle, status etc.")
     audio_state.handle = file_handle
     audio_state.status = "streaming"
 
     -- Safely read DFPWM header
+    debug("Reading DFPWM header")
     local header_ok, header = pcall(function() return file_handle.read(4) end)
+    debug("Header read: ok=%s, header=%s", tostring(header_ok), tostring(header and ("[" .. string.gsub(header, "[%z\1-\31\127-\255]", function(c) return string.format("\\x%02X", string.byte(c)) end) .. "]" or "nil")))
     if not header_ok or not header then
       log("ERROR", "Failed to read DFPWM header from: " .. resolved.path)
+      debug("FAILED: reading DFPWM header")
       pcall(function() file_handle.close() end)
       audio_state.status = "idle"
       return
@@ -686,21 +713,28 @@ local function request_stream(kind, url, context)
     audio_state.start = header
     audio_state.chunk_size = 16 * 1024 - 4
     audio_state.consecutive_failures = 0
-    audio_state.decoder = decoder
+    debug("Audio state after header: chunk_size=%s, start(header) set", tostring(audio_state.chunk_size))
+    audio_state.decoder = dfpwm.make_decoder()
+    debug("Created DFPWM decoder")
 
     if kind == "music" then
+      debug("Starting time tracker for music")
       start_time_tracker()
     end
 
+    debug("Queueing audio_update event")
     os.queueEvent("audio_update")
   elseif resolved.type == "http" then
     -- Handle HTTP request as before
     log("INFO", string.format("HTTP request queued (%s): %s", kind, url))
+    debug("Queueing HTTP stream: %s", url)
     pending_requests[url] = context
     http.request({ url = url, method = "GET", binary = true })
+    debug("HTTP request submitted")
   else
     -- Error case
     log("ERROR", string.format("Failed to resolve URL (%s): %s", kind, resolved.error or "unknown error"))
+    debug("FAILED: resolve_audio_url: type=%s, error=%s", tostring(resolved and resolved.type or "nil"), tostring(resolved and resolved.error or "nil"))
     audio_state.status = "idle"
   end
 end
@@ -1705,7 +1739,7 @@ local function httpLoop()
         audio_state.start = handle.read(4)
         audio_state.chunk_size = 16 * 1024 - 4
         audio_state.consecutive_failures = 0
-        audio_state.decoder = decoder
+        audio_state.decoder = dfpwm.make_decoder()
         if request.kind == "music" then
           start_time_tracker()
         end
