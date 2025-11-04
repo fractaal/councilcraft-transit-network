@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.18-emergency-viz-fallback",
-  "description": "CouncilCraft PA & Entertainment System - added fallback for visualizer when all buffered entries are in future. When time-based sync can't find past values, applies most recent RMS anyway. Includes enhanced debug logging.",
+  "version": "0.2.19-sample-based-sync",
+  "description": "CouncilCraft PA & Entertainment System - SIMPLIFIED visualizer sync to use sample indices instead of timestamps. Uses the exact same calculation as display (elapsed_time * sample_rate) to find current sample, then finds closest RMS value by sample index. Much simpler and accurate!",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

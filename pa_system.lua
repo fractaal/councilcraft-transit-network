@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.18-emergency-viz-fallback"
+local VERSION = "0.2.19-sample-based-sync"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -22,7 +22,7 @@ local API_KEY = "COUNCILCRAFT_MINECRAFT_SERVER_XD"
 local CHIME_URL = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/sounds/SG_MRT_BELL.dfpwm"
 local DEFAULT_PAUSE_DURATION = 30  -- Default pause duration in seconds for playlist entries
 
-local MONITOR_TEXT_SCALE = 1.5
+local MONITOR_TEXT_SCALE = 1
 local MARQUEE_MIN_GAP = 6
 local MARQUEE_SCROLL_INTERVAL = 0.15  -- Seconds between marquee scroll ticks
 
@@ -300,70 +300,53 @@ local function visualizer_buffer_rms(rms, play_epoch, sample_index)
   end
 end
 
--- Sync visualizer to current playback time (stateless)
+-- Sync visualizer to current playback time (stateless) - SIMPLE SAMPLE-BASED VERSION
 local function visualizer_sync_to_time()
   if not visualizer.enabled or not visualizer.active then
     return
   end
 
   if not audio_state.stream_start_epoch then
-    debug("[visualizer_sync_to_time] No stream_start_epoch")
     return
   end
 
   local now = os.epoch("utc")
+  local elapsed_ms = now - audio_state.stream_start_epoch
+  local elapsed_s = elapsed_ms / 1000
+
+  -- Calculate which sample SHOULD be playing right now (same as display calculation)
+  local current_sample = math.floor(elapsed_s * audio_state.sample_rate)
+
   local target_rms = nil
   local best_distance = math.huge
   local entries_checked = 0
-  local future_entries = 0
-  local past_entries = 0
 
-  -- Find the RMS value closest to current time (but not future)
+  -- Find the RMS value whose sample_index is closest to current_sample
   local read_pos = visualizer.rms_buffer_read
   while read_pos ~= visualizer.rms_buffer_write do
     local entry = visualizer.rms_buffer[read_pos]
-    if entry and entry.play_epoch then
+    if entry and entry.sample_index then
       entries_checked = entries_checked + 1
-      local distance = now - entry.play_epoch
+      local distance = math.abs(current_sample - entry.sample_index)
 
-      -- Only consider values that should have played (not future)
-      if distance >= 0 and distance < best_distance then
+      if distance < best_distance then
         best_distance = distance
         target_rms = entry.rms
-        past_entries = past_entries + 1
+      end
 
-        -- Advance read pointer past consumed entries
-        if distance > 100 then -- More than 100ms old, we've passed it
-          visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
-        end
-      elseif distance < 0 then
-        future_entries = future_entries + 1
+      -- Clean up old entries that are way behind
+      if entry.sample_index < current_sample - 96000 then  -- More than 2 seconds old
+        visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
       end
     end
 
     read_pos = (read_pos % visualizer.rms_buffer_size) + 1
   end
 
-  -- Debug log what we found
-  if entries_checked > 0 then
-    local elapsed_ms = now - audio_state.stream_start_epoch
-    debug("[visualizer_sync] Checked %d entries (%d past, %d future), best_dist=%.1fms, elapsed=%.1fms, rms=%s",
-      entries_checked, past_entries, future_entries, best_distance, elapsed_ms, tostring(target_rms))
-  end
-
-  -- If everything is in the future, we have a timing problem - apply most recent anyway
-  if future_entries > 0 and past_entries == 0 and entries_checked > 0 then
-    debug("[visualizer_sync] ALL entries future - timing offset issue, applying latest anyway")
-    -- Just grab the most recently added entry
-    local latest_pos = (visualizer.rms_buffer_write - 1)
-    if latest_pos < 1 then
-      latest_pos = visualizer.rms_buffer_size
-    end
-    local latest = visualizer.rms_buffer[latest_pos]
-    if latest and latest.rms then
-      target_rms = latest.rms
-      debug("[visualizer_sync] Using latest RMS: %.3f", target_rms)
-    end
+  -- Debug log occasionally
+  if entries_checked > 0 and math.random() < 0.1 then  -- 10% sampling
+    debug("[visualizer_sync] current_sample=%d, checked=%d, best_dist=%d samples (%.1fms), rms=%s",
+      current_sample, entries_checked, best_distance, best_distance / 48, tostring(target_rms))
   end
 
   -- Apply the RMS value if we found one
@@ -372,7 +355,6 @@ local function visualizer_sync_to_time()
     visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
     visualizer.last_frame_epoch = now
     apply_redstone_output(visualizer.last_level)
-    debug("[visualizer_sync] Applied RMS: %.3f -> level: %.3f", target_rms, visualizer.last_level)
   end
 end
 
