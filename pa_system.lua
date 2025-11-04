@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.13-time-synced-viz"
+local VERSION = "0.2.14-viz-render-fix"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -182,18 +182,22 @@ local function visualizer_sync_to_time()
   end
 
   if not audio_state.stream_start_epoch then
+    debug("[visualizer_sync_to_time] No stream_start_epoch")
     return
   end
 
   local now = os.epoch("utc")
   local target_rms = nil
   local best_distance = math.huge
+  local entries_checked = 0
+  local future_entries = 0
 
   -- Find the RMS value closest to current time (but not future)
   local read_pos = visualizer.rms_buffer_read
   while read_pos ~= visualizer.rms_buffer_write do
     local entry = visualizer.rms_buffer[read_pos]
     if entry and entry.play_epoch then
+      entries_checked = entries_checked + 1
       local distance = now - entry.play_epoch
 
       -- Only consider values that should have played (not future)
@@ -205,10 +209,19 @@ local function visualizer_sync_to_time()
         if distance > 100 then -- More than 100ms old, we've passed it
           visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
         end
+      elseif distance < 0 then
+        future_entries = future_entries + 1
       end
     end
 
     read_pos = (read_pos % visualizer.rms_buffer_size) + 1
+  end
+
+  -- Debug log what we found
+  if entries_checked > 0 then
+    local elapsed_ms = now - audio_state.stream_start_epoch
+    debug("[visualizer_sync] Checked %d entries, %d future, best_dist=%.1fms, elapsed=%.1fms, rms=%s",
+      entries_checked, future_entries, best_distance, elapsed_ms, tostring(target_rms))
   end
 
   -- Apply the RMS value if we found one
@@ -268,11 +281,15 @@ local function visualizer_start(label)
   visualizer.pending_count = 0
   visualizer.last_level = 0
   visualizer.last_frame_epoch = os.epoch("utc")
+  visualizer.max_level_seen = 0  -- Reset max level for new stream
   -- Clear ring buffer for new stream
   visualizer.rms_buffer = {}
   visualizer.rms_buffer_write = 1
   visualizer.rms_buffer_read = 1
+  debug("[visualizer_start] Started visualizer for %s", label or "unknown")
   visualizer_queue_render()
+  -- Ensure we get regular updates even without marquee
+  os.queueEvent("render_ui")
 end
 
 local function visualizer_finish()
@@ -298,6 +315,7 @@ local function visualizer_feed(buffer, buffer_start_sample)
     return
   end
   if not buffer or not audio_state.stream_start_epoch then
+    debug("[visualizer_feed] No buffer or stream_start_epoch")
     return
   end
 
@@ -307,6 +325,7 @@ local function visualizer_feed(buffer, buffer_start_sample)
   local sum = visualizer.pending_sum
   local count = visualizer.pending_count
   local sample_offset = 0
+  local windows_created = 0
 
   for i = 1, #buffer do
     local sample = buffer[i]
@@ -325,11 +344,25 @@ local function visualizer_feed(buffer, buffer_start_sample)
 
         -- Buffer the RMS value with its future play time
         visualizer_buffer_rms(rms, window_play_epoch, window_start_sample)
+        windows_created = windows_created + 1
 
         sum = 0
         count = 0
       end
     end
+  end
+
+  if windows_created > 0 then
+    local now = os.epoch("utc")
+    local first_window_delay = 0
+    if visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created] then
+      local entry = visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created]
+      if entry and entry.play_epoch then
+        first_window_delay = entry.play_epoch - now
+      end
+    end
+    debug("[visualizer_feed] Created %d windows, buffer_start=%d, first_delay=%.1fms",
+      windows_created, buffer_start_sample, first_window_delay)
   end
 
   visualizer.pending_sum = sum
@@ -351,7 +384,14 @@ local function visualizer_get_level()
   -- Sync to current playback position first
   visualizer_sync_to_time()
   visualizer_decay()
-  return math.max(0, math.min(1, visualizer.last_level))
+  local level = math.max(0, math.min(1, visualizer.last_level))
+
+  -- Debug log level periodically
+  if math.random() < 0.05 then  -- 5% chance to log
+    debug("[visualizer_get_level] level=%.3f, active=%s", level, tostring(visualizer.active))
+  end
+
+  return level
 end
 
 local function visualizer_render_line(monitor, y)
@@ -887,7 +927,7 @@ local function render_monitors()
     local remaining_lines = height - (line_y - 1)
 
     -- Show debug timing info if streaming
-    if remaining_lines >= 2 and audio_state.status == "streaming" and audio_state.stream_start_epoch then
+    if remaining_lines >= 3 and audio_state.status == "streaming" and audio_state.stream_start_epoch then
       local now = os.epoch("utc")
       local elapsed_ms = now - audio_state.stream_start_epoch
       local elapsed_s = elapsed_ms / 1000
@@ -898,7 +938,7 @@ local function render_monitors()
       -- Calculate total duration from samples received
       local total_duration_from_samples = audio_state.samples_queued_total / audio_state.sample_rate
 
-      -- Format debug line
+      -- Format timing debug line
       local debug_text = string.format("S:%d/%d (%.1fs/%.1fs",
         estimated_sample,
         audio_state.samples_queued_total,
@@ -912,11 +952,56 @@ local function render_monitors()
         debug_text = debug_text .. ")"
       end
 
-      monitor.setCursorPos(1, height - 1)
+      monitor.setCursorPos(1, height - 2)
       monitor.setTextColor(colors.lightGray)
       monitor.write(debug_text:sub(1, width))
 
+      -- Add signal strength debug line
+      local current_level = visualizer.last_level or 0
+      local signal_debug = string.format("SIG: %.3f", current_level)
+
+      -- Add buffer info
+      local buffer_size = 0
+      if visualizer.rms_buffer_write >= visualizer.rms_buffer_read then
+        buffer_size = visualizer.rms_buffer_write - visualizer.rms_buffer_read
+      else
+        buffer_size = (visualizer.rms_buffer_size - visualizer.rms_buffer_read) + visualizer.rms_buffer_write
+      end
+
+      signal_debug = signal_debug .. string.format(" | BUF:%d", buffer_size)
+
+      -- Add max level seen (track the max for this session)
+      if not visualizer.max_level_seen then
+        visualizer.max_level_seen = 0
+      end
+      if current_level > visualizer.max_level_seen then
+        visualizer.max_level_seen = current_level
+      end
+      signal_debug = signal_debug .. string.format(" | MAX:%.3f", visualizer.max_level_seen)
+
+      monitor.setCursorPos(1, height - 1)
+      monitor.setTextColor(colors.yellow)
+      monitor.write(signal_debug:sub(1, width))
+
       -- Visualizer on last line
+      visualizer_render_line(monitor, height)
+    elseif remaining_lines >= 2 then
+      -- Show just signal debug and visualizer
+      local current_level = visualizer.last_level or 0
+      local signal_debug = string.format("SIG: %.3f", current_level)
+
+      if not visualizer.max_level_seen then
+        visualizer.max_level_seen = 0
+      end
+      if current_level > visualizer.max_level_seen then
+        visualizer.max_level_seen = current_level
+      end
+      signal_debug = signal_debug .. string.format(" | MAX:%.3f", visualizer.max_level_seen)
+
+      monitor.setCursorPos(1, height - 1)
+      monitor.setTextColor(colors.yellow)
+      monitor.write(signal_debug:sub(1, width))
+
       visualizer_render_line(monitor, height)
     elseif remaining_lines >= 1 then
       -- Just visualizer if not enough space for debug
@@ -926,9 +1011,15 @@ local function render_monitors()
     monitor.setTextColor(colors.white)
   end
 
+  -- Set up timers for next update
   if global_scroll then
     if not marquee_timer then
       marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
+    end
+  elseif visualizer.active and visualizer.enabled then
+    -- Even without scrolling, we need regular updates for the visualizer
+    if not marquee_timer then
+      marquee_timer = os.startTimer(visualizer.render_interval_ms / 1000)  -- Convert ms to seconds
     end
   elseif marquee_timer then
     os.cancelTimer(marquee_timer)
@@ -1113,6 +1204,7 @@ local function request_stream(kind, url, context)
       audio_state.decoder = dfpwm.make_decoder()
       debug("Created DFPWM decoder: %s", tostring(audio_state.decoder ~= nil))
       if audio_state.decoder then
+        debug("[request_stream] Starting visualizer for %s", context.label or kind)
         visualizer_start(context.label or kind)
       end
     else
@@ -1611,9 +1703,15 @@ local function uiLoop()
           end
         end
 
-        if any_scroll then
+        -- Always render if visualizer is active, or if scrolling
+        if any_scroll or (visualizer.active and visualizer.enabled) then
           render_monitors()
-          marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
+          if any_scroll then
+            marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
+          else
+            -- Use visualizer update rate
+            marquee_timer = os.startTimer(visualizer.render_interval_ms / 1000)
+          end
         else
           marquee_timer = nil
         end
