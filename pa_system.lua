@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.17-proper-function-order"
+local VERSION = "0.2.18-emergency-viz-fallback"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -123,6 +123,7 @@ local visualizer = {
   smoothing_factor = 0.25,
   decay_tau_ms = 120,
   render_interval_ms = 25,
+  playback_latency_ms = 0,     -- Speaker buffer latency compensation (adjustable)
   active = false,
   label = nil,
   pending_sum = 0,
@@ -315,6 +316,7 @@ local function visualizer_sync_to_time()
   local best_distance = math.huge
   local entries_checked = 0
   local future_entries = 0
+  local past_entries = 0
 
   -- Find the RMS value closest to current time (but not future)
   local read_pos = visualizer.rms_buffer_read
@@ -328,6 +330,7 @@ local function visualizer_sync_to_time()
       if distance >= 0 and distance < best_distance then
         best_distance = distance
         target_rms = entry.rms
+        past_entries = past_entries + 1
 
         -- Advance read pointer past consumed entries
         if distance > 100 then -- More than 100ms old, we've passed it
@@ -344,8 +347,23 @@ local function visualizer_sync_to_time()
   -- Debug log what we found
   if entries_checked > 0 then
     local elapsed_ms = now - audio_state.stream_start_epoch
-    debug("[visualizer_sync] Checked %d entries, %d future, best_dist=%.1fms, elapsed=%.1fms, rms=%s",
-      entries_checked, future_entries, best_distance, elapsed_ms, tostring(target_rms))
+    debug("[visualizer_sync] Checked %d entries (%d past, %d future), best_dist=%.1fms, elapsed=%.1fms, rms=%s",
+      entries_checked, past_entries, future_entries, best_distance, elapsed_ms, tostring(target_rms))
+  end
+
+  -- If everything is in the future, we have a timing problem - apply most recent anyway
+  if future_entries > 0 and past_entries == 0 and entries_checked > 0 then
+    debug("[visualizer_sync] ALL entries future - timing offset issue, applying latest anyway")
+    -- Just grab the most recently added entry
+    local latest_pos = (visualizer.rms_buffer_write - 1)
+    if latest_pos < 1 then
+      latest_pos = visualizer.rms_buffer_size
+    end
+    local latest = visualizer.rms_buffer[latest_pos]
+    if latest and latest.rms then
+      target_rms = latest.rms
+      debug("[visualizer_sync] Using latest RMS: %.3f", target_rms)
+    end
   end
 
   -- Apply the RMS value if we found one
@@ -354,6 +372,7 @@ local function visualizer_sync_to_time()
     visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
     visualizer.last_frame_epoch = now
     apply_redstone_output(visualizer.last_level)
+    debug("[visualizer_sync] Applied RMS: %.3f -> level: %.3f", target_rms, visualizer.last_level)
   end
 end
 
@@ -464,7 +483,7 @@ local function visualizer_feed(buffer, buffer_start_sample)
 
         -- Calculate when this window will actually play
         local window_start_sample = buffer_start_sample + sample_offset - visualizer.window_samples
-        local window_play_epoch = audio_state.stream_start_epoch + (window_start_sample / audio_state.sample_rate) * 1000
+        local window_play_epoch = audio_state.stream_start_epoch + (window_start_sample / audio_state.sample_rate) * 1000 - visualizer.playback_latency_ms
 
         -- Buffer the RMS value with its future play time
         visualizer_buffer_rms(rms, window_play_epoch, window_start_sample)
@@ -479,14 +498,16 @@ local function visualizer_feed(buffer, buffer_start_sample)
   if windows_created > 0 then
     local now = os.epoch("utc")
     local first_window_delay = 0
+    local first_window_epoch = 0
     if visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created] then
       local entry = visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created]
       if entry and entry.play_epoch then
+        first_window_epoch = entry.play_epoch
         first_window_delay = entry.play_epoch - now
       end
     end
-    debug("[visualizer_feed] Created %d windows, buffer_start=%d, first_delay=%.1fms",
-      windows_created, buffer_start_sample, first_window_delay)
+    debug("[visualizer_feed] Created %d windows, buffer_start=%d, first_delay=%.1fms, first_epoch=%d, now=%d, stream_start=%d",
+      windows_created, buffer_start_sample, first_window_delay, first_window_epoch, now, audio_state.stream_start_epoch or 0)
   end
 
   visualizer.pending_sum = sum
