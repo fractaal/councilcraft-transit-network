@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.15-debug-fix",
-  "description": "CouncilCraft PA & Entertainment System - fixed debug function name conflict with Lua's built-in debug table. Moved log/debug functions earlier in code for proper initialization order.",
+  "version": "0.2.17-proper-function-order",
+  "description": "CouncilCraft PA & Entertainment System - properly ordered all function definitions. Moved redraw_logs, redraw_prompt, and queue_prompt_redraw before log() to eliminate forward reference issues. Logs now display correctly.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

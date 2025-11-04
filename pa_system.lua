@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.15-debug-fix"
+local VERSION = "0.2.17-proper-function-order"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -142,6 +142,85 @@ local base_term = term.current()
 local term_width, term_height = base_term.getSize()
 local LOG_HISTORY = math.max(80, term_height - 1)
 local log_lines = {}
+local command_buffer = ""
+local cursor_pos = 0
+local command_history = {}
+local history_index = nil
+local prompt_needs_redraw = true
+
+local function format_time(seconds)
+  if not seconds or seconds < 0 then
+    return "--:--"
+  end
+  local mins = math.floor(seconds / 60)
+  local secs = math.floor(seconds % 60)
+  return string.format("%d:%02d", mins, secs)
+end
+
+local function redraw_logs()
+  local prev = term.redirect(base_term)
+  term_width, term_height = term.getSize()
+  term.setBackgroundColor(colors.black)
+  term.setTextColor(colors.white)
+  term.clear()
+
+  term.setCursorPos(1, 1)
+  term.write(string.format("PA System v%s  [Standalone]", VERSION))
+  term.setCursorPos(1, 2)
+
+  local api_label = state.api_base_url or DEFAULT_API_BASE
+  local line2 = "API: " .. api_label
+  if state.now_playing and audio_state.status == "streaming" and not state.paused then
+    local time_str = string.format(" [%s/%s]", format_time(state.elapsed_seconds), format_time(state.track_duration))
+    line2 = line2 .. time_str
+  elseif state.paused then
+    line2 = line2 .. " [PAUSED]"
+  end
+  term.write(line2)
+  term.setCursorPos(1, 3)
+  term.write(string.rep("-", term_width))
+
+  local log_start_row = 4
+  local visible = term_height - log_start_row
+  if visible < 1 then
+    visible = 1
+  end
+  LOG_HISTORY = math.max(200, visible * 10)
+  local start = math.max(1, #log_lines - visible + 1)
+  for row = 0, visible - 1 do
+    term.setCursorPos(1, log_start_row + row)
+    term.clearLine()
+    local line = log_lines[start + row]
+    if line then
+      term.write(line)
+    end
+  end
+  term.redirect(prev)
+end
+
+local function redraw_prompt()
+  local prev = term.redirect(base_term)
+  term_width, term_height = term.getSize()
+  term.setCursorBlink(true)
+  term.setCursorPos(1, term_height)
+  term.clearLine()
+  local prompt = "> " .. command_buffer
+  if #prompt > term_width then
+    prompt = prompt:sub(#prompt - term_width + 1)
+  end
+  term.write(prompt)
+  local cursor_x = math.min(term_width, 2 + cursor_pos)
+  term.setCursorPos(cursor_x, term_height)
+  term.redirect(prev)
+  prompt_needs_redraw = false
+end
+
+local function queue_prompt_redraw()
+  if not prompt_needs_redraw then
+    prompt_needs_redraw = true
+    os.queueEvent("pa_prompt_refresh")
+  end
+end
 
 local function log(severity, message)
   if not message then
@@ -167,8 +246,7 @@ local function log(severity, message)
     end
   end
 
-  -- redraw_logs and queue_prompt_redraw are defined later in the file
-  -- but Lua allows forward references in function bodies
+  -- Now these functions are defined above, so call them directly
   redraw_logs()
   queue_prompt_redraw()
 end
@@ -495,88 +573,7 @@ end
 local pending_requests = {}
 local http_blockers = 0
 
--- Terminal variables already defined above
-local command_buffer = ""
-local cursor_pos = 0
-local command_history = {}
-local history_index = nil
-local prompt_needs_redraw = true
-
-local function format_time(seconds)
-  if not seconds or seconds < 0 then
-    return "--:--"
-  end
-  local mins = math.floor(seconds / 60)
-  local secs = math.floor(seconds % 60)
-  return string.format("%d:%02d", mins, secs)
-end
-
-local function redraw_logs()
-  local prev = term.redirect(base_term)
-  term_width, term_height = term.getSize()
-  term.setBackgroundColor(colors.black)
-  term.setTextColor(colors.white)
-  term.clear()
-
-  term.setCursorPos(1, 1)
-  term.write(string.format("PA System v%s  [Standalone]", VERSION))
-  term.setCursorPos(1, 2)
-
-  local api_label = state.api_base_url or DEFAULT_API_BASE
-  local line2 = "API: " .. api_label
-  if state.now_playing and audio_state.status == "streaming" and not state.paused then
-    local time_str = string.format(" [%s/%s]", format_time(state.elapsed_seconds), format_time(state.track_duration))
-    line2 = line2 .. time_str
-  elseif state.paused then
-    line2 = line2 .. " [PAUSED]"
-  end
-  term.write(line2)
-  term.setCursorPos(1, 3)
-  term.write(string.rep("-", term_width))
-
-  local log_start_row = 4
-  local visible = term_height - log_start_row
-  if visible < 1 then
-    visible = 1
-  end
-  LOG_HISTORY = math.max(200, visible * 10)
-  local start = math.max(1, #log_lines - visible + 1)
-  for row = 0, visible - 1 do
-    term.setCursorPos(1, log_start_row + row)
-    term.clearLine()
-    local line = log_lines[start + row]
-    if line then
-      term.write(line)
-    end
-  end
-  term.redirect(prev)
-end
-
-local function redraw_prompt()
-  local prev = term.redirect(base_term)
-  term_width, term_height = term.getSize()
-  term.setCursorBlink(true)
-  term.setCursorPos(1, term_height)
-  term.clearLine()
-  local prompt = "> " .. command_buffer
-  if #prompt > term_width then
-    prompt = prompt:sub(#prompt - term_width + 1)
-  end
-  term.write(prompt)
-  local cursor_x = math.min(term_width, 2 + cursor_pos)
-  term.setCursorPos(cursor_x, term_height)
-  term.redirect(prev)
-  prompt_needs_redraw = false
-end
-
-local function queue_prompt_redraw()
-  if not prompt_needs_redraw then
-    prompt_needs_redraw = true
-    os.queueEvent("pa_prompt_refresh")
-  end
-end
-
--- log() and debug() functions already defined above
+-- All terminal/logging functions already defined above - no duplicates needed
 
 local function print_help()
   local help_text = [[Available commands:
