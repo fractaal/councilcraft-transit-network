@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.14-viz-render-fix",
-  "description": "CouncilCraft PA & Entertainment System with fixed visualizer rendering. Now updates display regularly even when marquee text isn't scrolling. Includes debug signal strength display.",
+  "version": "0.2.15-debug-fix",
+  "description": "CouncilCraft PA & Entertainment System - fixed debug function name conflict with Lua's built-in debug table. Moved log/debug functions earlier in code for proper initialization order.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

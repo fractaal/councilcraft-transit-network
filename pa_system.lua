@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.14-viz-render-fix"
+local VERSION = "0.2.15-debug-fix"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -136,6 +136,52 @@ local visualizer = {
   rms_buffer_write = 1,        -- Next write position
   rms_buffer_read = 1,         -- Next read position
 }
+
+-- Terminal and logging setup (moved up for debug function availability)
+local base_term = term.current()
+local term_width, term_height = base_term.getSize()
+local LOG_HISTORY = math.max(80, term_height - 1)
+local log_lines = {}
+
+local function log(severity, message)
+  if not message then
+    message = severity
+    severity = "INFO"
+  end
+  local timestamp = textutils.formatTime(os.time(), true)
+
+  -- Split multiline messages and wrap long lines
+  for line in (message .. "\n"):gmatch("([^\n]*)\n") do
+    if line ~= "" then
+      local formatted = string.format("[%s][%s] %s", timestamp, severity, line)
+
+      -- Wrap long lines to terminal width
+      while #formatted > 0 do
+        local chunk = formatted:sub(1, term_width)
+        table.insert(log_lines, chunk)
+        if #log_lines > LOG_HISTORY then
+          table.remove(log_lines, 1)
+        end
+        formatted = formatted:sub(term_width + 1)
+      end
+    end
+  end
+
+  -- redraw_logs and queue_prompt_redraw are defined later in the file
+  -- but Lua allows forward references in function bodies
+  redraw_logs()
+  queue_prompt_redraw()
+end
+
+local function debug(msg, ...)
+  if DEBUG then
+    local out = "[DEBUG] " .. msg
+    if select('#', ...) > 0 then
+      out = string.format(out, ...)
+    end
+    log("DEBUG", out)
+  end
+end
 
 local function visualizer_should_render()
   return visualizer.enabled and #monitors > 0
@@ -449,10 +495,7 @@ end
 local pending_requests = {}
 local http_blockers = 0
 
-local base_term = term.current()
-local term_width, term_height = base_term.getSize()
-local LOG_HISTORY = math.max(80, term_height - 1)
-local log_lines = {}
+-- Terminal variables already defined above
 local command_buffer = ""
 local cursor_pos = 0
 local command_history = {}
@@ -533,43 +576,7 @@ local function queue_prompt_redraw()
   end
 end
 
-local function log(severity, message)
-  if not message then
-    message = severity
-    severity = "INFO"
-  end
-  local timestamp = textutils.formatTime(os.time(), true)
-
-  -- Split multiline messages and wrap long lines
-  for line in (message .. "\n"):gmatch("([^\n]*)\n") do
-    if line ~= "" then
-      local formatted = string.format("[%s][%s] %s", timestamp, severity, line)
-
-      -- Wrap long lines to terminal width
-      while #formatted > 0 do
-        local chunk = formatted:sub(1, term_width)
-        table.insert(log_lines, chunk)
-        if #log_lines > LOG_HISTORY then
-          table.remove(log_lines, 1)
-        end
-        formatted = formatted:sub(term_width + 1)
-      end
-    end
-  end
-
-  redraw_logs()
-  queue_prompt_redraw()
-end
-
-local function debug(msg, ...)
-  if DEBUG then
-    local out = "[DEBUG] " .. msg
-    if select('#', ...) > 0 then
-      out = string.format(out, ...)
-    end
-    log("DEBUG", out)
-  end
-end
+-- log() and debug() functions already defined above
 
 local function print_help()
   local help_text = [[Available commands:
