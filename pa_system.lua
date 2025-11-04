@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.21-dedicated-viz-loop"
+local VERSION = "0.2.22-inline-viz-calc"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -504,17 +504,8 @@ local function visualizer_get_level()
   if not visualizer.enabled then
     return 0
   end
-  -- Sync to current playback position first
-  visualizer_sync_to_time()
-  visualizer_decay()
-  local level = math.max(0, math.min(1, visualizer.last_level))
-
-  -- Debug log level periodically
-  if math.random() < 0.05 then  -- 5% chance to log
-    debug("[visualizer_get_level] level=%.3f, active=%s", level, tostring(visualizer.active))
-  end
-
-  return level
+  -- Just return current level - visualizerLoop handles all updates
+  return math.max(0, math.min(1, visualizer.last_level))
 end
 
 local function visualizer_render_line(monitor, y)
@@ -2548,11 +2539,49 @@ end
 local function visualizerLoop()
   while true do
     if visualizer.active and visualizer.enabled and audio_state.stream_start_epoch then
-      -- Sync to current playback position as fast as possible
-      visualizer_sync_to_time()
+      local now = os.epoch("utc")
+      local elapsed_ms = now - audio_state.stream_start_epoch
+      local elapsed_s = elapsed_ms / 1000
 
-      -- Small sleep to prevent 100% CPU usage but still very responsive
-      os.sleep(0.01)  -- ~100Hz updates
+      -- Calculate which sample SHOULD be playing right now (same as display)
+      local current_sample = math.floor(elapsed_s * audio_state.sample_rate)
+
+      local target_rms = nil
+      local best_distance = math.huge
+
+      -- Find the RMS value whose sample_index is closest to current_sample
+      local read_pos = visualizer.rms_buffer_read
+      while read_pos ~= visualizer.rms_buffer_write do
+        local entry = visualizer.rms_buffer[read_pos]
+        if entry and entry.sample_index then
+          local distance = math.abs(current_sample - entry.sample_index)
+
+          if distance < best_distance then
+            best_distance = distance
+            target_rms = entry.rms
+          end
+
+          -- Clean up old entries
+          if entry.sample_index < current_sample - 96000 then
+            visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
+          end
+        end
+
+        read_pos = (read_pos % visualizer.rms_buffer_size) + 1
+      end
+
+      -- Apply the RMS value if found
+      if target_rms then
+        local clamped = math.min(1, math.max(0, target_rms))
+        visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
+        visualizer.last_frame_epoch = now
+
+        -- Directly update redstone output as fast as we can
+        apply_redstone_output(visualizer.last_level)
+      end
+
+      -- Very tight loop - no sleep, run as fast as possible
+      os.sleep(0)  -- Yield to other coroutines but resume immediately
     else
       -- If not active, just wait for activation
       os.sleep(0.1)
