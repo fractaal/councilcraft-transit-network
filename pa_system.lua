@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.20-20hz-viz-rate"
+local VERSION = "0.2.21-dedicated-viz-loop"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -2545,13 +2545,28 @@ local function supervisorLoop()
   end
 end
 
+local function visualizerLoop()
+  while true do
+    if visualizer.active and visualizer.enabled and audio_state.stream_start_epoch then
+      -- Sync to current playback position as fast as possible
+      visualizer_sync_to_time()
+
+      -- Small sleep to prevent 100% CPU usage but still very responsive
+      os.sleep(0.01)  -- ~100Hz updates
+    else
+      -- If not active, just wait for activation
+      os.sleep(0.1)
+    end
+  end
+end
+
 local function main()
   if state.autoplay_on_start and state.playlist and #state.playlist > 0 then
     log("INFO", "Autoplay enabled - starting playback")
     start_current_track()
   end
 
-  parallel.waitForAny(commandLoop, uiLoop, audioLoop, httpLoop, supervisorLoop)
+  parallel.waitForAny(commandLoop, uiLoop, audioLoop, httpLoop, supervisorLoop, visualizerLoop)
 end
 
 init()

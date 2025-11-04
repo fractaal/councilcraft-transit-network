@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.20-20hz-viz-rate",
-  "description": "CouncilCraft PA & Entertainment System - increased visualizer update rate to 20Hz (50ms) to match redstone update speed. Provides smoother, more responsive visualization.",
+  "version": "0.2.21-dedicated-viz-loop",
+  "description": "CouncilCraft PA & Entertainment System - added dedicated visualizerLoop() running independently at ~100Hz. No longer depends on timers - continuously syncs to current sample position and updates redstone output as fast as possible.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",
