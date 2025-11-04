@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.22-inline-viz-calc",
-  "description": "CouncilCraft PA & Entertainment System - visualizer calculation inlined directly in visualizerLoop. UI loop now just reads current level without recalculating. Runs as tight as possible with sleep(0) for maximum responsiveness.",
+  "version": "0.2.23-viz-debug-flood",
+  "description": "CouncilCraft PA & Entertainment System - added UNGATED debug logging to visualizerLoop. Every iteration logs: elapsed time, current sample, entries scanned, buffer positions, distance to match, RMS value, and output level. Full observability for debugging.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

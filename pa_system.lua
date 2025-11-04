@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.22-inline-viz-calc"
+local VERSION = "0.2.23-viz-debug-flood"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -2537,7 +2537,10 @@ local function supervisorLoop()
 end
 
 local function visualizerLoop()
+  local iteration = 0
   while true do
+    iteration = iteration + 1
+
     if visualizer.active and visualizer.enabled and audio_state.stream_start_epoch then
       local now = os.epoch("utc")
       local elapsed_ms = now - audio_state.stream_start_epoch
@@ -2548,12 +2551,16 @@ local function visualizerLoop()
 
       local target_rms = nil
       local best_distance = math.huge
+      local entries_scanned = 0
 
       -- Find the RMS value whose sample_index is closest to current_sample
       local read_pos = visualizer.rms_buffer_read
-      while read_pos ~= visualizer.rms_buffer_write do
+      local write_pos = visualizer.rms_buffer_write
+
+      while read_pos ~= write_pos do
         local entry = visualizer.rms_buffer[read_pos]
         if entry and entry.sample_index then
+          entries_scanned = entries_scanned + 1
           local distance = math.abs(current_sample - entry.sample_index)
 
           if distance < best_distance then
@@ -2570,19 +2577,29 @@ local function visualizerLoop()
         read_pos = (read_pos % visualizer.rms_buffer_size) + 1
       end
 
+      -- ALWAYS LOG - ungated for observability
+      debug("[vizLoop#%d] elapsed=%.1fs | cur_sample=%d | scanned=%d | read=%d write=%d | best_dist=%d | rms=%s | level=%.3f",
+        iteration, elapsed_s, current_sample, entries_scanned,
+        visualizer.rms_buffer_read, visualizer.rms_buffer_write,
+        best_distance, tostring(target_rms), visualizer.last_level)
+
       -- Apply the RMS value if found
       if target_rms then
         local clamped = math.min(1, math.max(0, target_rms))
+        local old_level = visualizer.last_level
         visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
         visualizer.last_frame_epoch = now
 
         -- Directly update redstone output as fast as we can
         apply_redstone_output(visualizer.last_level)
+        debug("[vizLoop#%d] UPDATED: %.3f -> %.3f (redstone set)", iteration, old_level, visualizer.last_level)
       end
 
       -- Very tight loop - no sleep, run as fast as possible
       os.sleep(0)  -- Yield to other coroutines but resume immediately
     else
+      debug("[vizLoop#%d] WAITING: active=%s | enabled=%s | stream_epoch=%s",
+        iteration, tostring(visualizer.active), tostring(visualizer.enabled), tostring(audio_state.stream_start_epoch ~= nil))
       -- If not active, just wait for activation
       os.sleep(0.1)
     end
