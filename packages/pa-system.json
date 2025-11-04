@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.11-fix-freezes",
-  "description": "CouncilCraft PA & Entertainment System controller/station software with autoplay and reboot-on-playlist-end support. Auto-update checker removed.",
+  "version": "0.2.13-time-synced-viz",
+  "description": "CouncilCraft PA & Entertainment System with time-synchronized audio visualizer. Features mandatory metadata retrieval for accurate playback tracking and sample-accurate visualization syncing.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

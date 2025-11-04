@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.11-fix-freezes"
+local VERSION = "0.2.13-time-synced-viz"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -50,6 +50,7 @@ local state = {
   pause_timer = nil,  -- Timer ID for playlist pause entries
   autoplay_on_start = false,  -- Whether to auto-start playback on controller boot
   reboot_on_playlist_end = false,  -- Whether to reboot when playlist completes (workaround for freezing)
+  redstone_side = nil,  -- Optional analog/digital output for music visualizer
 }
 
 local speakers = {}
@@ -71,7 +72,339 @@ local audio_state = {
   flush_remaining = 0,
   flush_mode = nil,
   flush_timeout = nil,
+  -- Timeline tracking for visualizer sync
+  stream_start_epoch = nil,    -- When the current stream started playing
+  samples_queued_total = 0,     -- Total samples sent to speakers since stream start
+  sample_rate = 48000,          -- ComputerCraft standard sample rate
 }
+
+local VALID_REDSTONE_SIDES = {
+  left = true,
+  right = true,
+  top = true,
+  bottom = true,
+  front = true,
+  back = true,
+}
+
+local function apply_redstone_output(level)
+  if not state.redstone_side or not redstone then
+    return
+  end
+
+  local side = state.redstone_side
+  local analog_level = math.max(0, math.min(15, math.floor((level or 0) * 15 + 0.5)))
+
+  if redstone.setAnalogOutput then
+    redstone.setAnalogOutput(side, analog_level)
+  else
+    -- Fallback for computers without analog control: treat high levels as on
+    local threshold = 7  -- ~45%
+    redstone.setOutput(side, analog_level > threshold)
+  end
+end
+
+local function clear_redstone_output()
+  if not state.redstone_side or not redstone then
+    return
+  end
+  local side = state.redstone_side
+  if redstone.setAnalogOutput then
+    redstone.setAnalogOutput(side, 0)
+  else
+    redstone.setOutput(side, false)
+  end
+end
+
+local visualizer = {
+  enabled = true,
+  sample_rate = 48000,
+  window_samples = 960,        -- ~20ms frames for tighter sync
+  smoothing_factor = 0.25,
+  decay_tau_ms = 120,
+  render_interval_ms = 25,
+  active = false,
+  label = nil,
+  pending_sum = 0,
+  pending_count = 0,
+  last_level = 0,
+  last_frame_epoch = 0,
+  last_render_epoch = 0,
+  -- Ring buffer for time-indexed RMS values
+  rms_buffer = {},             -- Array of {rms, play_epoch, sample_index}
+  rms_buffer_size = 100,       -- ~2 seconds of 20ms windows
+  rms_buffer_write = 1,        -- Next write position
+  rms_buffer_read = 1,         -- Next read position
+}
+
+local function visualizer_should_render()
+  return visualizer.enabled and #monitors > 0
+end
+
+local function visualizer_queue_render()
+  if not visualizer_should_render() then
+    return
+  end
+  local now = os.epoch("utc")
+  if now - visualizer.last_render_epoch < visualizer.render_interval_ms then
+    return
+  end
+  visualizer.last_render_epoch = now
+  os.queueEvent("render_ui")
+end
+
+-- Buffer an RMS value with its target playback time
+local function visualizer_buffer_rms(rms, play_epoch, sample_index)
+  if not visualizer.enabled or not visualizer.active then
+    return
+  end
+
+  -- Store in ring buffer
+  visualizer.rms_buffer[visualizer.rms_buffer_write] = {
+    rms = rms,
+    play_epoch = play_epoch,
+    sample_index = sample_index
+  }
+
+  -- Advance write pointer (wrap around)
+  visualizer.rms_buffer_write = (visualizer.rms_buffer_write % visualizer.rms_buffer_size) + 1
+
+  -- If we've caught up to read pointer, advance it (overwriting old data)
+  if visualizer.rms_buffer_write == visualizer.rms_buffer_read then
+    visualizer.rms_buffer_read = (visualizer.rms_buffer_read % visualizer.rms_buffer_size) + 1
+  end
+end
+
+-- Sync visualizer to current playback time (stateless)
+local function visualizer_sync_to_time()
+  if not visualizer.enabled or not visualizer.active then
+    return
+  end
+
+  if not audio_state.stream_start_epoch then
+    return
+  end
+
+  local now = os.epoch("utc")
+  local target_rms = nil
+  local best_distance = math.huge
+
+  -- Find the RMS value closest to current time (but not future)
+  local read_pos = visualizer.rms_buffer_read
+  while read_pos ~= visualizer.rms_buffer_write do
+    local entry = visualizer.rms_buffer[read_pos]
+    if entry and entry.play_epoch then
+      local distance = now - entry.play_epoch
+
+      -- Only consider values that should have played (not future)
+      if distance >= 0 and distance < best_distance then
+        best_distance = distance
+        target_rms = entry.rms
+
+        -- Advance read pointer past consumed entries
+        if distance > 100 then -- More than 100ms old, we've passed it
+          visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
+        end
+      end
+    end
+
+    read_pos = (read_pos % visualizer.rms_buffer_size) + 1
+  end
+
+  -- Apply the RMS value if we found one
+  if target_rms then
+    local clamped = math.min(1, math.max(0, target_rms))
+    visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
+    visualizer.last_frame_epoch = now
+    apply_redstone_output(visualizer.last_level)
+  end
+end
+
+local function visualizer_apply_rms(rms)
+  -- Legacy function kept for compatibility, now just buffers for current time
+  if not visualizer.enabled then
+    return
+  end
+  local now = os.epoch("utc")
+  visualizer_buffer_rms(rms, now, 0)
+  visualizer_sync_to_time()
+  visualizer_queue_render()
+end
+
+local function visualizer_decay()
+  if not visualizer.enabled then
+    return
+  end
+
+  -- First sync to current playback position
+  visualizer_sync_to_time()
+
+  if visualizer.last_frame_epoch == 0 then
+    return
+  end
+
+  local now = os.epoch("utc")
+  local elapsed = now - visualizer.last_frame_epoch
+  if elapsed <= 0 or visualizer.decay_tau_ms <= 0 then
+    return
+  end
+
+  -- Apply decay if no recent update from sync
+  if elapsed > 50 then -- Only decay if we haven't synced in 50ms
+    local decay = math.exp(-elapsed / visualizer.decay_tau_ms)
+    visualizer.last_level = visualizer.last_level * decay
+    visualizer.last_frame_epoch = now
+    apply_redstone_output(visualizer.last_level)
+  end
+end
+
+local function visualizer_start(label)
+  if not visualizer.enabled then
+    return
+  end
+  visualizer.active = true
+  visualizer.label = label
+  visualizer.pending_sum = 0
+  visualizer.pending_count = 0
+  visualizer.last_level = 0
+  visualizer.last_frame_epoch = os.epoch("utc")
+  -- Clear ring buffer for new stream
+  visualizer.rms_buffer = {}
+  visualizer.rms_buffer_write = 1
+  visualizer.rms_buffer_read = 1
+  visualizer_queue_render()
+end
+
+local function visualizer_finish()
+  if not visualizer.enabled then
+    return
+  end
+  visualizer.active = false
+  visualizer.label = nil
+  visualizer.pending_sum = 0
+  visualizer.pending_count = 0
+  visualizer.last_level = 0
+  visualizer.last_frame_epoch = os.epoch("utc")
+  -- Clear ring buffer
+  visualizer.rms_buffer = {}
+  visualizer.rms_buffer_write = 1
+  visualizer.rms_buffer_read = 1
+  apply_redstone_output(0)
+  visualizer_queue_render()
+end
+
+local function visualizer_feed(buffer, buffer_start_sample)
+  if not visualizer.enabled or not visualizer.active then
+    return
+  end
+  if not buffer or not audio_state.stream_start_epoch then
+    return
+  end
+
+  -- Default to current total if not specified
+  buffer_start_sample = buffer_start_sample or audio_state.samples_queued_total
+
+  local sum = visualizer.pending_sum
+  local count = visualizer.pending_count
+  local sample_offset = 0
+
+  for i = 1, #buffer do
+    local sample = buffer[i]
+    if type(sample) == "number" then
+      local normalized = sample / 127
+      sum = sum + (normalized * normalized)
+      count = count + 1
+      sample_offset = sample_offset + 1
+
+      if count >= visualizer.window_samples then
+        local rms = math.sqrt(sum / count)
+
+        -- Calculate when this window will actually play
+        local window_start_sample = buffer_start_sample + sample_offset - visualizer.window_samples
+        local window_play_epoch = audio_state.stream_start_epoch + (window_start_sample / audio_state.sample_rate) * 1000
+
+        -- Buffer the RMS value with its future play time
+        visualizer_buffer_rms(rms, window_play_epoch, window_start_sample)
+
+        sum = 0
+        count = 0
+      end
+    end
+  end
+
+  visualizer.pending_sum = sum
+  visualizer.pending_count = count
+end
+
+local function visualizer_bump(level)
+  if not visualizer.enabled then
+    return
+  end
+  visualizer.active = true
+  visualizer_apply_rms(level or 0.8)
+end
+
+local function visualizer_get_level()
+  if not visualizer.enabled then
+    return 0
+  end
+  -- Sync to current playback position first
+  visualizer_sync_to_time()
+  visualizer_decay()
+  return math.max(0, math.min(1, visualizer.last_level))
+end
+
+local function visualizer_render_line(monitor, y)
+  if not visualizer.enabled or not monitor then
+    return
+  end
+
+  local level = visualizer_get_level()
+  if level <= 0.01 and not visualizer.active then
+    if state.redstone_side then
+      apply_redstone_output(level)
+    end
+    return
+  end
+
+  local width = select(1, monitor.getSize())
+  if width < 16 then
+    return
+  end
+
+  monitor.setCursorPos(1, y)
+  monitor.clearLine()
+  monitor.setTextColor(colors.gray)
+  monitor.write("AUDIO:")
+
+  local bar_width = math.max(0, width - 9)
+  if bar_width <= 0 then
+    monitor.setTextColor(colors.white)
+    return
+  end
+
+  local filled = math.floor(level * bar_width + 0.5)
+  monitor.setTextColor(colors.gray)
+  monitor.write(" [")
+  if filled > 0 then
+    local color = colors.orange
+    if level >= 0.75 then
+      color = colors.lime
+    elseif level >= 0.45 then
+      color = colors.yellow
+    elseif level < 0.2 then
+      color = colors.gray
+    end
+    monitor.setTextColor(color)
+    monitor.write(string.rep("#", math.min(filled, bar_width)))
+  end
+  if filled < bar_width then
+    monitor.setTextColor(colors.gray)
+    monitor.write(string.rep("-", bar_width - filled))
+  end
+  monitor.write("]")
+  monitor.setTextColor(colors.white)
+end
 
 local pending_requests = {}
 local http_blockers = 0
@@ -188,6 +521,16 @@ local function log(severity, message)
   queue_prompt_redraw()
 end
 
+local function debug(msg, ...)
+  if DEBUG then
+    local out = "[DEBUG] " .. msg
+    if select('#', ...) > 0 then
+      out = string.format(out, ...)
+    end
+    log("DEBUG", out)
+  end
+end
+
 local function print_help()
   local help_text = [[Available commands:
   help - show this help
@@ -198,6 +541,7 @@ local function print_help()
   stop - stop playback
   next - skip to next track
   goto <index> - jump to track by index
+  loop [mode] - get/set loop mode (repeat_all|repeat_one|off)
   add <url> - add track to playlist
   addpause [seconds] - add pause between tracks
   edittitle <index> "title" - edit track title
@@ -211,6 +555,7 @@ local function print_help()
   clearpa - clear persistent PA text
   reload - reload state from disk
   setapi <url> - update API base URL
+  ampout <side|off> - route amplitude meter to redstone (left/right/top/bottom/front/back)
   clear - clear log window]]
   log("INFO", help_text)
 end
@@ -310,6 +655,9 @@ local function persistence_setup()
   if config.api_base_url and config.api_base_url ~= "" then
     state.api_base_url = config.api_base_url
   end
+  if config.redstone_side and config.redstone_side ~= "" then
+    state.redstone_side = config.redstone_side
+  end
 
   if not state.api_base_url then
     term.clear()
@@ -345,6 +693,8 @@ local function refresh_peripherals()
   if #speakers == 0 then
     log("WARN", "No speakers detected. Audio playback will be muted.")
   end
+
+  visualizer_queue_render()
 end
 
 -- Removed sync_update_state() - auto update checker disabled
@@ -382,6 +732,10 @@ local function init()
   redraw_prompt()
 
   refresh_peripherals()
+
+  if state.redstone_side then
+    clear_redstone_output()
+  end
 
   log("INFO", string.format("Playlist entries: %d", #(state.playlist or {})))
   log("INFO", "Type 'help' for command list.")
@@ -530,6 +884,45 @@ local function render_monitors()
       line_y = line_y + 1
     end
 
+    local remaining_lines = height - (line_y - 1)
+
+    -- Show debug timing info if streaming
+    if remaining_lines >= 2 and audio_state.status == "streaming" and audio_state.stream_start_epoch then
+      local now = os.epoch("utc")
+      local elapsed_ms = now - audio_state.stream_start_epoch
+      local elapsed_s = elapsed_ms / 1000
+
+      -- Calculate estimated current sample from time
+      local estimated_sample = math.floor(elapsed_s * audio_state.sample_rate)
+
+      -- Calculate total duration from samples received
+      local total_duration_from_samples = audio_state.samples_queued_total / audio_state.sample_rate
+
+      -- Format debug line
+      local debug_text = string.format("S:%d/%d (%.1fs/%.1fs",
+        estimated_sample,
+        audio_state.samples_queued_total,
+        elapsed_s,
+        total_duration_from_samples)
+
+      -- Add metadata duration if available
+      if state.track_duration and state.track_duration > 0 then
+        debug_text = debug_text .. string.format(", meta:%.1fs)", state.track_duration)
+      else
+        debug_text = debug_text .. ")"
+      end
+
+      monitor.setCursorPos(1, height - 1)
+      monitor.setTextColor(colors.lightGray)
+      monitor.write(debug_text:sub(1, width))
+
+      -- Visualizer on last line
+      visualizer_render_line(monitor, height)
+    elseif remaining_lines >= 1 then
+      -- Just visualizer if not enough space for debug
+      visualizer_render_line(monitor, height)
+    end
+
     monitor.setTextColor(colors.white)
   end
 
@@ -575,10 +968,17 @@ local function update_elapsed_time()
 end
 
 local function stop_audio()
+  debug("[stop_audio] Called: status=%s, mode=%s, handle=%s, decoder=%s",
+    tostring(audio_state.status),
+    tostring(audio_state.mode),
+    tostring(audio_state.handle ~= nil),
+    tostring(audio_state.decoder ~= nil))
+
   -- Request graceful stop at next chunk boundary (don't tear down immediately)
   if audio_state.status == "streaming" or audio_state.status == "waiting" then
     audio_state.stop_requested = true
     log("INFO", "Audio stop requested (will complete at next chunk)")
+    debug("[stop_audio] Set stop_requested=true, NOT queueing audio_update event")
 
     -- Cancel any pending HTTP requests
     for url, ctx in pairs(pending_requests) do
@@ -588,6 +988,8 @@ local function stop_audio()
     end
 
     stop_time_tracker()
+  else
+    debug("[stop_audio] No-op: status is '%s' (not streaming/waiting)", tostring(audio_state.status))
   end
 end
 
@@ -646,18 +1048,6 @@ local function build_api_url(path, track_url)
   return base .. path .. "?track=" .. encoded_track .. "&key=" .. encoded_key
 end
 
--- Global debug flag (expected in config table)
-
-local function debug(msg, ...)
-  if DEBUG then
-    local out = "[DEBUG] " .. msg
-    if select('#', ...) > 0 then
-      out = string.format(out, ...)
-    end
-    log("DEBUG", out)
-  end
-end
-
 local function request_stream(kind, url, context)
   debug("request_stream called with kind=%s url=%s context=%s", tostring(kind), tostring(url), textutils.serialize(context))
 
@@ -697,6 +1087,9 @@ local function request_stream(kind, url, context)
     debug("Setting up audio_state for streaming: set handle, status etc.")
     audio_state.handle = file_handle
     audio_state.status = "streaming"
+    -- Initialize timeline tracking
+    audio_state.stream_start_epoch = os.epoch("utc")
+    audio_state.samples_queued_total = 0
 
     -- Safely read DFPWM header
     debug("Reading DFPWM header")
@@ -714,8 +1107,19 @@ local function request_stream(kind, url, context)
     audio_state.chunk_size = 16 * 1024 - 4
     audio_state.consecutive_failures = 0
     debug("Audio state after header: chunk_size=%s, start(header) set", tostring(audio_state.chunk_size))
-    audio_state.decoder = dfpwm.make_decoder()
-    debug("Created DFPWM decoder")
+    debug("Checking dfpwm module availability: %s", tostring(dfpwm ~= nil))
+    if dfpwm and dfpwm.make_decoder then
+      debug("Calling dfpwm.make_decoder()")
+      audio_state.decoder = dfpwm.make_decoder()
+      debug("Created DFPWM decoder: %s", tostring(audio_state.decoder ~= nil))
+      if audio_state.decoder then
+        visualizer_start(context.label or kind)
+      end
+    else
+      debug("CRITICAL: dfpwm module or make_decoder not available!")
+      log("ERROR", "DFPWM decoder unavailable - audio will not play")
+      audio_state.decoder = nil
+    end
 
     if kind == "music" then
       debug("Starting time tracker for music")
@@ -739,13 +1143,13 @@ local function request_stream(kind, url, context)
   end
 end
 
-local function request_info(url, index)
+local function fetch_track_metadata(url)
   local info_url, err = build_api_url("/info", url)
   if not info_url then
     if err ~= "internal track" then
-      log("WARN", string.format("Skipping metadata request for track %s (%s)", tostring(url), err or "unknown reason"))
+      log("WARN", string.format("Cannot fetch metadata for %s (%s)", tostring(url), err or "unknown reason"))
     end
-    return
+    return nil
   end
 
   log("INFO", "Fetching metadata: " .. info_url)
@@ -756,12 +1160,12 @@ local function request_info(url, index)
 
   if not ok then
     log("WARN", "Metadata request threw error: " .. tostring(response))
-    return
+    return nil
   end
 
   if not response then
     log("WARN", "Metadata request failed: " .. (err or info_url))
-    return
+    return nil
   end
 
   local body = response.readAll()
@@ -769,12 +1173,25 @@ local function request_info(url, index)
 
   if not body or body == "" then
     log("WARN", "Metadata response empty for " .. info_url)
-    return
+    return nil
   end
 
   local ok, data = pcall(textutils.unserialiseJSON, body)
   if not ok or not data then
     log("WARN", "Unable to parse metadata for track " .. tostring(url))
+    return nil
+  end
+
+  return {
+    title = data.title,
+    artist = data.channel,
+    duration = data.durationSeconds
+  }
+end
+
+local function request_info(url, index)
+  local metadata = fetch_track_metadata(url)
+  if not metadata then
     return
   end
 
@@ -784,16 +1201,16 @@ local function request_info(url, index)
   end
 
   local updated = false
-  if data.title and data.title ~= "" then
-    entry.title = data.title
+  if metadata.title and metadata.title ~= "" then
+    entry.title = metadata.title
     updated = true
   end
-  if data.channel and data.channel ~= "" then
-    entry.artist = data.channel
+  if metadata.artist and metadata.artist ~= "" then
+    entry.artist = metadata.artist
     updated = true
   end
-  if data.durationSeconds then
-    entry.duration = data.durationSeconds
+  if metadata.duration then
+    entry.duration = metadata.duration
     updated = true
   end
 
@@ -822,22 +1239,6 @@ local function snapshot_current_track()
 end
 
 local function start_music_stream(entry)
-  state.now_playing = {
-    url = entry.url,
-    title = entry.title,
-    artist = entry.artist,
-  }
-  state.track_duration = entry.duration or 0
-  state.paused = false
-  os.queueEvent("render_ui")
-  schedule_marquee()
-
-  if entry.title then
-    log("INFO", string.format("Starting track: %s (%s)", entry.title, entry.url or ""))
-  else
-    log("INFO", "Starting track: " .. (entry.url or "(unknown)"))
-  end
-
   if type(entry.url) ~= "string" or entry.url == "" then
     log("ERROR", "Cannot start track: playlist entry missing URL")
     return
@@ -850,6 +1251,42 @@ local function start_music_stream(entry)
     return
   end
   local is_internal = (resolved.type == "internal")
+
+  -- Always fetch metadata for HTTP tracks (mandatory now)
+  if not is_internal and (not entry.duration or not entry.title) then
+    local metadata = fetch_track_metadata(entry.url)
+    if metadata then
+      if metadata.title and metadata.title ~= "" then
+        entry.title = metadata.title
+      end
+      if metadata.artist and metadata.artist ~= "" then
+        entry.artist = metadata.artist
+      end
+      if metadata.duration then
+        entry.duration = metadata.duration
+      end
+      persist_pa_state()
+    else
+      -- Log warning but continue - we'll just not have duration info
+      log("WARN", "Could not fetch metadata, proceeding without duration info")
+    end
+  end
+
+  state.now_playing = {
+    url = entry.url,
+    title = entry.title,
+    artist = entry.artist,
+  }
+  state.track_duration = entry.duration or 0
+  state.paused = false
+  os.queueEvent("render_ui")
+  schedule_marquee()
+
+  if entry.title then
+    log("INFO", string.format("Starting track: %s (%s, %s seconds)", entry.title, entry.url or "", entry.duration or "unknown"))
+  else
+    log("INFO", "Starting track: " .. (entry.url or "(unknown)"))
+  end
 
   local stream_url
   if is_internal then
@@ -866,12 +1303,20 @@ local function start_music_stream(entry)
   end
 
   if #speakers > 0 then
+    debug("[start_music_stream] Calling stop_audio() before starting new stream")
     stop_audio()
 
     -- Wait for audio to actually stop before starting new stream
+    debug("[start_music_stream] Entering blocking wait for audio_state.status == 'idle' (current: %s)", tostring(audio_state.status))
+    local wait_iterations = 0
     while audio_state.status ~= "idle" do
+      wait_iterations = wait_iterations + 1
+      if wait_iterations % 10 == 1 then
+        debug("[start_music_stream] Still waiting for idle (iteration %d, status=%s)", wait_iterations, tostring(audio_state.status))
+      end
       os.pullEvent("audio_update")
     end
+    debug("[start_music_stream] Audio stopped, continuing (waited %d iterations)", wait_iterations)
 
     audio_state.active_speakers = {}
     audio_state.mode = "music"
@@ -922,6 +1367,11 @@ local function advance_playlist()
           log("INFO", "Playlist complete - rebooting per rebootend setting...")
           os.sleep(1)  -- Give time for log to display
           os.reboot()
+        elseif state.loop_mode == "off" then
+          -- Stop playback at end of playlist
+          state.current_index = 1
+          log("INFO", "Playlist complete (loop mode: off)")
+          return
         else
           state.current_index = 1
         end
@@ -932,11 +1382,21 @@ local function advance_playlist()
     return
   end
 
-  -- Normal track entry - only request info if we don't already have it
+  -- Normal track entry - always fetch fresh metadata for HTTP URLs
   if entry.url and entry.url:sub(1, 11) ~= "internal://" then
-    -- Only fetch metadata for HTTP URLs
-    if not entry.title or not entry.artist then
-      request_info(entry.url, state.current_index)
+    -- Always fetch metadata to ensure we have duration
+    local metadata = fetch_track_metadata(entry.url)
+    if metadata then
+      if metadata.title and metadata.title ~= "" then
+        entry.title = metadata.title
+      end
+      if metadata.artist and metadata.artist ~= "" then
+        entry.artist = metadata.artist
+      end
+      if metadata.duration then
+        entry.duration = metadata.duration
+      end
+      persist_pa_state()
     end
   end
 
@@ -954,6 +1414,12 @@ local function advance_playlist()
         log("INFO", "Playlist complete - rebooting per rebootend setting...")
         os.sleep(1)  -- Give time for log to display
         os.reboot()
+      elseif state.loop_mode == "off" then
+        -- Stop playback at end of playlist
+        state.current_index = 1
+        persist_pa_state()
+        log("INFO", "Playlist complete (loop mode: off)")
+        return
       else
         state.current_index = 1
       end
@@ -964,6 +1430,9 @@ local function advance_playlist()
 end
 
 local function start_current_track()
+  debug("[start_current_track] Called: audio_state.status=%s, current_index=%d",
+    tostring(audio_state.status), state.current_index)
+
   if not state.playlist or #state.playlist == 0 then
     log("WARN", "Playlist empty; nothing to play")
     return
@@ -978,6 +1447,7 @@ local function start_current_track()
     log("ERROR", "Invalid playlist entry at index " .. tostring(index))
     return
   end
+  debug("[start_current_track] Starting track at index %d: %s", index, entry.url or "(no url)")
   start_music_stream(entry)
   if state.loop_mode ~= "repeat_one" then
     state.current_index = index + 1
@@ -999,12 +1469,20 @@ local function queue_pa_sequence(audio_url)
     return
   end
 
+  debug("[queue_pa_sequence] Calling stop_audio() before starting PA")
   stop_audio()
 
   -- Wait for audio to actually stop before starting PA sequence
+  debug("[queue_pa_sequence] Entering blocking wait for audio_state.status == 'idle' (current: %s)", tostring(audio_state.status))
+  local wait_iterations = 0
   while audio_state.status ~= "idle" do
+    wait_iterations = wait_iterations + 1
+    if wait_iterations % 10 == 1 then
+      debug("[queue_pa_sequence] Still waiting for idle (iteration %d, status=%s)", wait_iterations, tostring(audio_state.status))
+    end
     os.pullEvent("audio_update")
   end
+  debug("[queue_pa_sequence] Audio stopped, continuing (waited %d iterations)", wait_iterations)
 
   audio_state.mode = "pa"
   audio_state.status = "waiting"
@@ -1175,7 +1653,17 @@ start_next_audio_in_queue = function()
 end
 
 local function play_buffer(buffer)
+  -- Track where this buffer starts in the stream
+  local buffer_start_sample = audio_state.samples_queued_total
+
+  -- Feed visualizer with sample position info
+  visualizer_feed(buffer, buffer_start_sample)
+
   if #speakers == 0 then
+    -- Still need to track samples even without speakers
+    if buffer then
+      audio_state.samples_queued_total = audio_state.samples_queued_total + #buffer
+    end
     return
   end
 
@@ -1196,9 +1684,15 @@ local function play_buffer(buffer)
     end
   end
   pcall(parallel.waitForAll, table.unpack(tasks))
+
+  -- Update total samples after successful queue
+  if buffer then
+    audio_state.samples_queued_total = audio_state.samples_queued_total + #buffer
+  end
 end
 
 local function start_speaker_flush(mode)
+  debug("[start_speaker_flush] Called with mode=%s", tostring(mode))
   if not audio_state.active_speakers then
     audio_state.active_speakers = {}
   end
@@ -1208,9 +1702,11 @@ local function start_speaker_flush(mode)
   for name in pairs(audio_state.active_speakers) do
     pending[name] = true
     count = count + 1
+    debug("[start_speaker_flush] Tracking speaker: %s", tostring(name))
   end
 
   if count == 0 then
+    debug("[start_speaker_flush] No active speakers, returning false")
     return false
   end
 
@@ -1219,11 +1715,15 @@ local function start_speaker_flush(mode)
   audio_state.flush_pending = pending
   audio_state.flush_remaining = count
   audio_state.flush_timeout = os.startTimer(0.5)
+  debug("[start_speaker_flush] Started flush: count=%d, timeout_id=%s", count, tostring(audio_state.flush_timeout))
   return true
 end
 
 local function finalize_speaker_flush()
   local mode = audio_state.flush_mode
+  debug("[finalize_speaker_flush] Called: mode=%s, remaining=%d",
+    tostring(mode),
+    audio_state.flush_remaining or 0)
 
   audio_state.flush_pending = nil
   audio_state.flush_remaining = 0
@@ -1234,16 +1734,28 @@ local function finalize_speaker_flush()
   audio_state.status = "idle"
   audio_state.mode = nil
 
+  visualizer_finish()
+
   if mode == "music" then
+    debug("[finalize_speaker_flush] Queueing music_stream_complete event")
     os.queueEvent("music_stream_complete")
   end
+  debug("[finalize_speaker_flush] Flush finalized, status now idle")
 end
 
 local function audioLoop()
   while true do
+    debug("[audioLoop] Iteration start: status=%s, handle=%s, decoder=%s, mode=%s",
+      tostring(audio_state.status),
+      tostring(audio_state.handle ~= nil),
+      tostring(audio_state.decoder ~= nil),
+      tostring(audio_state.mode))
+
     if audio_state.status == "streaming" and audio_state.handle and audio_state.decoder then
+      debug("[audioLoop] Condition MET: entering streaming processing")
       -- Check for graceful stop request
       if audio_state.stop_requested then
+        debug("[audioLoop] Processing stop_requested=true, cleaning up gracefully")
         -- Graceful cleanup at chunk boundary
         if audio_state.handle and audio_state.handle.close then
           pcall(function() audio_state.handle.close() end)
@@ -1263,6 +1775,9 @@ local function audioLoop()
         audio_state.flush_remaining = 0
         audio_state.flush_mode = nil
         audio_state.flush_timeout = nil
+        -- Reset timeline tracking
+        audio_state.stream_start_epoch = nil
+        audio_state.samples_queued_total = 0
 
         -- Stop speakers
         for _, speaker in ipairs(speakers) do
@@ -1271,6 +1786,7 @@ local function audioLoop()
 
         log("INFO", "Audio playback halted gracefully")
         os.queueEvent("audio_update")  -- Wake up any waiting threads
+        visualizer_finish()
       else
         -- Guard against invalid handle
         local ok, chunk = pcall(function()
@@ -1295,12 +1811,15 @@ local function audioLoop()
               audio_state.flush_mode = nil
               audio_state.flush_timeout = nil
               os.queueEvent("music_stream_complete")
+              visualizer_finish()
             end
           elseif audio_state.mode == "pa" then
             audio_state.status = "waiting"
+            visualizer_finish()
             start_next_audio_in_queue()
           else
             audio_state.status = "idle"
+            visualizer_finish()
           end
         else
           if audio_state.start then
@@ -1315,33 +1834,73 @@ local function audioLoop()
       end
     else
       if audio_state.status == "flushing" then
+        debug("[audioLoop] Entered flushing loop: flush_remaining=%d, flush_timeout=%s",
+          audio_state.flush_remaining or 0,
+          tostring(audio_state.flush_timeout))
+
+        -- Re-arm the timeout to ensure we have a fresh timer ID
+        -- (original timer may have fired before we entered this loop)
+        if audio_state.flush_timeout then
+          pcall(os.cancelTimer, audio_state.flush_timeout)
+        end
+        audio_state.flush_timeout = os.startTimer(0.5)
+        debug("[audioLoop] Re-armed flush timeout: new_id=%s", tostring(audio_state.flush_timeout))
+
+        local flush_iterations = 0
         while audio_state.status == "flushing" do
+          flush_iterations = flush_iterations + 1
+          if flush_iterations % 20 == 1 then
+            debug("[audioLoop] Flushing iteration %d: remaining=%d, timeout_id=%s",
+              flush_iterations,
+              audio_state.flush_remaining or 0,
+              tostring(audio_state.flush_timeout))
+          end
           local event = { os.pullEvent() }
           local name = event[1]
           if name == "speaker_audio_empty" then
             local device = event[2]
+            debug("[audioLoop] speaker_audio_empty from %s (pending: %s)", tostring(device), tostring(audio_state.flush_pending and audio_state.flush_pending[device] or false))
             if audio_state.flush_pending and device and audio_state.flush_pending[device] then
               audio_state.flush_pending[device] = nil
               audio_state.flush_remaining = audio_state.flush_remaining - 1
+              debug("[audioLoop] Speaker drained, remaining=%d", audio_state.flush_remaining)
               if audio_state.flush_remaining <= 0 then
+                debug("[audioLoop] All speakers drained, finalizing flush")
                 finalize_speaker_flush()
               end
             end
           elseif name == "timer" then
             local timer_id = event[2]
+            debug("[audioLoop] Timer event: id=%s, expected_flush_timeout=%s, match=%s",
+              tostring(timer_id),
+              tostring(audio_state.flush_timeout),
+              tostring(audio_state.flush_timeout and timer_id == audio_state.flush_timeout))
             if audio_state.flush_timeout and timer_id == audio_state.flush_timeout then
+              debug("[audioLoop] Flush timeout reached, finalizing")
               finalize_speaker_flush()
             else
-              os.queueEvent(name, table.unpack(event, 2))
-              os.sleep(0)
+              -- DO NOT RE-QUEUE: This causes runaway timer creation in other coroutines
+              -- Just ignore non-matching timers - parallel coroutines have their own event copies
+              if flush_iterations % 20 == 1 then
+                debug("[audioLoop] Timer mismatch (id=%s), ignoring", tostring(timer_id))
+              end
             end
           else
-            os.queueEvent(name, table.unpack(event, 2))
-            os.sleep(0)
+            -- DO NOT RE-QUEUE: Events are already copied to other parallel coroutines
+            -- Re-queueing causes infinite loops and runaway event creation
+            if flush_iterations % 20 == 1 then
+              debug("[audioLoop] Flushing: ignoring event '%s'", tostring(name))
+            end
           end
         end
+        debug("[audioLoop] Exited flushing loop after %d iterations", flush_iterations)
       else
+        debug("[audioLoop] Condition FAILED: waiting for audio_update event (status=%s, handle=%s, decoder=%s)",
+          tostring(audio_state.status),
+          tostring(audio_state.handle ~= nil),
+          tostring(audio_state.decoder ~= nil))
         os.pullEvent("audio_update")
+        debug("[audioLoop] Woke up from audio_update event")
       end
     end
   end
@@ -1448,11 +2007,37 @@ local function handle_command(line)
       if not index or index < 1 or index > #state.playlist then
         log("WARN", string.format("Invalid index (must be 1-%d)", #state.playlist))
       else
+        debug("[goto] Jumping to track #%d (current audio_state: status=%s, mode=%s)",
+          index, tostring(audio_state.status), tostring(audio_state.mode))
         state.current_index = index
+        debug("[goto] Calling stop_music()")
         stop_music()
+        debug("[goto] Calling start_current_track()")
         start_current_track()
         persist_pa_state()
         log("INFO", string.format("Jumped to track #%d", index))
+        debug("[goto] Command completed")
+      end
+    end
+  elseif cmd == "loop" then
+    if rest == "" then
+      log("INFO", string.format("Current loop mode: %s", state.loop_mode))
+    else
+      local mode = rest:lower()
+      if mode == "repeat_all" or mode == "all" then
+        state.loop_mode = "repeat_all"
+        persist_pa_state()
+        log("INFO", "Loop mode set to: repeat_all")
+      elseif mode == "repeat_one" or mode == "one" then
+        state.loop_mode = "repeat_one"
+        persist_pa_state()
+        log("INFO", "Loop mode set to: repeat_one")
+      elseif mode == "off" or mode == "none" then
+        state.loop_mode = "off"
+        persist_pa_state()
+        log("INFO", "Loop mode set to: off")
+      else
+        log("WARN", "Invalid loop mode. Use: repeat_all, repeat_one, or off")
       end
     end
   elseif cmd == "move" then
@@ -1576,6 +2161,36 @@ local function handle_command(line)
       persist_config()
       persist_pa_state()
       log("INFO", "API base updated to " .. trimmed_url)
+    end
+  elseif cmd == "ampout" then
+    local argument = rest and rest:gsub("^%s+", ""):gsub("%s+$", ""):lower() or ""
+    if argument == "" then
+      if state.redstone_side then
+        log("INFO", string.format("Visualizer redstone output: %s", state.redstone_side))
+      else
+        log("INFO", "Visualizer redstone output disabled. Use ampout <side> to enable.")
+      end
+    elseif argument == "off" then
+      if state.redstone_side then
+        clear_redstone_output()
+        state.redstone_side = nil
+        config.redstone_side = nil
+        persist_config()
+        log("INFO", "Visualizer redstone output disabled")
+      else
+        log("INFO", "Visualizer redstone output already disabled")
+      end
+    elseif VALID_REDSTONE_SIDES[argument] then
+      if state.redstone_side and state.redstone_side ~= argument then
+        clear_redstone_output()
+      end
+      state.redstone_side = argument
+      config.redstone_side = argument
+      persist_config()
+      apply_redstone_output(visualizer_get_level())
+      log("INFO", "Visualizer redstone output set to side: " .. argument)
+    else
+      log("WARN", "Invalid side. Use: left, right, top, bottom, front, back, or off")
     end
   elseif cmd == "volume" then
     if rest == "" then
@@ -1734,15 +2349,32 @@ local function httpLoop()
         end
 
         log("INFO", string.format("Stream ready (%s): %s", request.label or request.kind, url))
+        debug("[httpLoop] HTTP success, setting up audio_state")
         audio_state.handle = handle
         audio_state.status = "streaming"
         audio_state.start = handle.read(4)
         audio_state.chunk_size = 16 * 1024 - 4
         audio_state.consecutive_failures = 0
-        audio_state.decoder = dfpwm.make_decoder()
+        -- Initialize timeline tracking for HTTP streams
+        audio_state.stream_start_epoch = os.epoch("utc")
+        audio_state.samples_queued_total = 0
+        debug("[httpLoop] Checking dfpwm module availability: %s", tostring(dfpwm ~= nil))
+        if dfpwm and dfpwm.make_decoder then
+          debug("[httpLoop] Calling dfpwm.make_decoder()")
+          audio_state.decoder = dfpwm.make_decoder()
+          debug("[httpLoop] Created DFPWM decoder: %s", tostring(audio_state.decoder ~= nil))
+          if audio_state.decoder then
+            visualizer_start(request.label or request.kind)
+          end
+        else
+          debug("[httpLoop] CRITICAL: dfpwm module or make_decoder not available!")
+          log("ERROR", "DFPWM decoder unavailable - audio will not play")
+          audio_state.decoder = nil
+        end
         if request.kind == "music" then
           start_time_tracker()
         end
+        debug("[httpLoop] Queueing audio_update event")
         os.queueEvent("audio_update")
       end,
       function()
