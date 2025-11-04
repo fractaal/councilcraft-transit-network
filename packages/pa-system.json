@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.23-viz-debug-flood",
-  "description": "CouncilCraft PA & Entertainment System - added UNGATED debug logging to visualizerLoop. Every iteration logs: elapsed time, current sample, entries scanned, buffer positions, distance to match, RMS value, and output level. Full observability for debugging.",
+  "version": "0.2.24-simple-array",
+  "description": "CouncilCraft PA & Entertainment System - SIMPLIFIED: replaced ring buffer with simple growing array. visualizer_add_rms() just appends, visualizerLoop does simple linear search. Removed complex pointer management and old sync functions. Much easier to debug!",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

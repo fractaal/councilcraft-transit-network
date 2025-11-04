@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.23-viz-debug-flood"
+local VERSION = "0.2.24-simple-array"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -123,7 +123,6 @@ local visualizer = {
   smoothing_factor = 0.25,
   decay_tau_ms = 120,
   render_interval_ms = 10,  -- 100Hz for very responsive visualization
-  playback_latency_ms = 0,     -- Speaker buffer latency compensation (adjustable)
   active = false,
   label = nil,
   pending_sum = 0,
@@ -131,11 +130,8 @@ local visualizer = {
   last_level = 0,
   last_frame_epoch = 0,
   last_render_epoch = 0,
-  -- Ring buffer for time-indexed RMS values
-  rms_buffer = {},             -- Array of {rms, play_epoch, sample_index}
-  rms_buffer_size = 100,       -- ~2 seconds of 20ms windows
-  rms_buffer_write = 1,        -- Next write position
-  rms_buffer_read = 1,         -- Next read position
+  -- Simple list of RMS values (no ring buffer complexity)
+  rms_list = {},               -- Array of {rms, sample_index}
 }
 
 -- Terminal and logging setup (moved up for debug function availability)
@@ -274,123 +270,21 @@ local function visualizer_queue_render()
   os.queueEvent("render_ui")
 end
 
--- Buffer an RMS value with its target playback time
-local function visualizer_buffer_rms(rms, play_epoch, sample_index)
+-- Add an RMS value to the list (simple!)
+local function visualizer_add_rms(rms, sample_index)
   if not visualizer.enabled or not visualizer.active then
     return
   end
 
-  -- Store in ring buffer
-  visualizer.rms_buffer[visualizer.rms_buffer_write] = {
+  table.insert(visualizer.rms_list, {
     rms = rms,
-    play_epoch = play_epoch,
     sample_index = sample_index
-  }
-
-  -- Advance write pointer (wrap around)
-  visualizer.rms_buffer_write = (visualizer.rms_buffer_write % visualizer.rms_buffer_size) + 1
-
-  -- If we've caught up to read pointer, advance it (overwriting old data)
-  if visualizer.rms_buffer_write == visualizer.rms_buffer_read then
-    visualizer.rms_buffer_read = (visualizer.rms_buffer_read % visualizer.rms_buffer_size) + 1
-  end
+  })
 end
 
--- Sync visualizer to current playback time (stateless) - SIMPLE SAMPLE-BASED VERSION
-local function visualizer_sync_to_time()
-  if not visualizer.enabled or not visualizer.active then
-    return
-  end
+-- visualizer_sync_to_time removed - visualizerLoop handles everything now
 
-  if not audio_state.stream_start_epoch then
-    return
-  end
-
-  local now = os.epoch("utc")
-  local elapsed_ms = now - audio_state.stream_start_epoch
-  local elapsed_s = elapsed_ms / 1000
-
-  -- Calculate which sample SHOULD be playing right now (same as display calculation)
-  local current_sample = math.floor(elapsed_s * audio_state.sample_rate)
-
-  local target_rms = nil
-  local best_distance = math.huge
-  local entries_checked = 0
-
-  -- Find the RMS value whose sample_index is closest to current_sample
-  local read_pos = visualizer.rms_buffer_read
-  while read_pos ~= visualizer.rms_buffer_write do
-    local entry = visualizer.rms_buffer[read_pos]
-    if entry and entry.sample_index then
-      entries_checked = entries_checked + 1
-      local distance = math.abs(current_sample - entry.sample_index)
-
-      if distance < best_distance then
-        best_distance = distance
-        target_rms = entry.rms
-      end
-
-      -- Clean up old entries that are way behind
-      if entry.sample_index < current_sample - 96000 then  -- More than 2 seconds old
-        visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
-      end
-    end
-
-    read_pos = (read_pos % visualizer.rms_buffer_size) + 1
-  end
-
-  -- Debug log occasionally
-  if entries_checked > 0 and math.random() < 0.1 then  -- 10% sampling
-    debug("[visualizer_sync] current_sample=%d, checked=%d, best_dist=%d samples (%.1fms), rms=%s",
-      current_sample, entries_checked, best_distance, best_distance / 48, tostring(target_rms))
-  end
-
-  -- Apply the RMS value if we found one
-  if target_rms then
-    local clamped = math.min(1, math.max(0, target_rms))
-    visualizer.last_level = (visualizer.last_level * visualizer.smoothing_factor) + (clamped * (1 - visualizer.smoothing_factor))
-    visualizer.last_frame_epoch = now
-    apply_redstone_output(visualizer.last_level)
-  end
-end
-
-local function visualizer_apply_rms(rms)
-  -- Legacy function kept for compatibility, now just buffers for current time
-  if not visualizer.enabled then
-    return
-  end
-  local now = os.epoch("utc")
-  visualizer_buffer_rms(rms, now, 0)
-  visualizer_sync_to_time()
-  visualizer_queue_render()
-end
-
-local function visualizer_decay()
-  if not visualizer.enabled then
-    return
-  end
-
-  -- First sync to current playback position
-  visualizer_sync_to_time()
-
-  if visualizer.last_frame_epoch == 0 then
-    return
-  end
-
-  local now = os.epoch("utc")
-  local elapsed = now - visualizer.last_frame_epoch
-  if elapsed <= 0 or visualizer.decay_tau_ms <= 0 then
-    return
-  end
-
-  -- Apply decay if no recent update from sync
-  if elapsed > 50 then -- Only decay if we haven't synced in 50ms
-    local decay = math.exp(-elapsed / visualizer.decay_tau_ms)
-    visualizer.last_level = visualizer.last_level * decay
-    visualizer.last_frame_epoch = now
-    apply_redstone_output(visualizer.last_level)
-  end
-end
+-- visualizer_apply_rms and visualizer_decay removed - visualizerLoop handles everything now
 
 local function visualizer_start(label)
   if not visualizer.enabled then
@@ -403,10 +297,8 @@ local function visualizer_start(label)
   visualizer.last_level = 0
   visualizer.last_frame_epoch = os.epoch("utc")
   visualizer.max_level_seen = 0  -- Reset max level for new stream
-  -- Clear ring buffer for new stream
-  visualizer.rms_buffer = {}
-  visualizer.rms_buffer_write = 1
-  visualizer.rms_buffer_read = 1
+  -- Clear RMS list for new stream
+  visualizer.rms_list = {}
   debug("[visualizer_start] Started visualizer for %s", label or "unknown")
   visualizer_queue_render()
   -- Ensure we get regular updates even without marquee
@@ -423,10 +315,8 @@ local function visualizer_finish()
   visualizer.pending_count = 0
   visualizer.last_level = 0
   visualizer.last_frame_epoch = os.epoch("utc")
-  -- Clear ring buffer
-  visualizer.rms_buffer = {}
-  visualizer.rms_buffer_write = 1
-  visualizer.rms_buffer_read = 1
+  -- Clear RMS list
+  visualizer.rms_list = {}
   apply_redstone_output(0)
   visualizer_queue_render()
 end
@@ -435,16 +325,15 @@ local function visualizer_feed(buffer, buffer_start_sample)
   if not visualizer.enabled or not visualizer.active then
     return
   end
-  if not buffer or not audio_state.stream_start_epoch then
-    debug("[visualizer_feed] No buffer or stream_start_epoch")
+  if not buffer then
     return
   end
 
   -- Default to current total if not specified
   buffer_start_sample = buffer_start_sample or audio_state.samples_queued_total
 
-  local sum = visualizer.pending_sum
-  local count = visualizer.pending_count
+  local sum = 0
+  local count = 0
   local sample_offset = 0
   local windows_created = 0
 
@@ -459,13 +348,18 @@ local function visualizer_feed(buffer, buffer_start_sample)
       if count >= visualizer.window_samples then
         local rms = math.sqrt(sum / count)
 
-        -- Calculate when this window will actually play
+        -- Calculate this window's sample index
         local window_start_sample = buffer_start_sample + sample_offset - visualizer.window_samples
-        local window_play_epoch = audio_state.stream_start_epoch + (window_start_sample / audio_state.sample_rate) * 1000 - visualizer.playback_latency_ms
 
-        -- Buffer the RMS value with its future play time
-        visualizer_buffer_rms(rms, window_play_epoch, window_start_sample)
+        -- Store RMS with sample index for later lookup
+        visualizer_add_rms(rms, window_start_sample)
         windows_created = windows_created + 1
+
+        -- Debug FIRST window created
+        if windows_created == 1 then
+          debug("[visualizer_feed] FIRST window: sample_idx=%d, rms=%.3f, buffer_start_sample=%d",
+            window_start_sample, rms, buffer_start_sample)
+        end
 
         sum = 0
         count = 0
@@ -473,31 +367,8 @@ local function visualizer_feed(buffer, buffer_start_sample)
     end
   end
 
-  if windows_created > 0 then
-    local now = os.epoch("utc")
-    local first_window_delay = 0
-    local first_window_epoch = 0
-    if visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created] then
-      local entry = visualizer.rms_buffer[visualizer.rms_buffer_write - windows_created]
-      if entry and entry.play_epoch then
-        first_window_epoch = entry.play_epoch
-        first_window_delay = entry.play_epoch - now
-      end
-    end
-    debug("[visualizer_feed] Created %d windows, buffer_start=%d, first_delay=%.1fms, first_epoch=%d, now=%d, stream_start=%d",
-      windows_created, buffer_start_sample, first_window_delay, first_window_epoch, now, audio_state.stream_start_epoch or 0)
-  end
-
-  visualizer.pending_sum = sum
-  visualizer.pending_count = count
-end
-
-local function visualizer_bump(level)
-  if not visualizer.enabled then
-    return
-  end
-  visualizer.active = true
-  visualizer_apply_rms(level or 0.8)
+  debug("[visualizer_feed] Created %d windows | buffer_start=%d | total_queued=%d",
+    windows_created, buffer_start_sample, audio_state.samples_queued_total)
 end
 
 local function visualizer_get_level()
@@ -954,15 +825,10 @@ local function render_monitors()
       local current_level = visualizer.last_level or 0
       local signal_debug = string.format("SIG: %.3f", current_level)
 
-      -- Add buffer info
-      local buffer_size = 0
-      if visualizer.rms_buffer_write >= visualizer.rms_buffer_read then
-        buffer_size = visualizer.rms_buffer_write - visualizer.rms_buffer_read
-      else
-        buffer_size = (visualizer.rms_buffer_size - visualizer.rms_buffer_read) + visualizer.rms_buffer_write
-      end
+      -- Add list size info
+      local list_size = #visualizer.rms_list
 
-      signal_debug = signal_debug .. string.format(" | BUF:%d", buffer_size)
+      signal_debug = signal_debug .. string.format(" | LIST:%d", list_size)
 
       -- Add max level seen (track the max for this session)
       if not visualizer.max_level_seen then
@@ -2551,36 +2417,24 @@ local function visualizerLoop()
 
       local target_rms = nil
       local best_distance = math.huge
-      local entries_scanned = 0
+      local list_size = #visualizer.rms_list
 
-      -- Find the RMS value whose sample_index is closest to current_sample
-      local read_pos = visualizer.rms_buffer_read
-      local write_pos = visualizer.rms_buffer_write
-
-      while read_pos ~= write_pos do
-        local entry = visualizer.rms_buffer[read_pos]
+      -- Simple linear search through the list
+      for i = 1, list_size do
+        local entry = visualizer.rms_list[i]
         if entry and entry.sample_index then
-          entries_scanned = entries_scanned + 1
           local distance = math.abs(current_sample - entry.sample_index)
 
           if distance < best_distance then
             best_distance = distance
             target_rms = entry.rms
           end
-
-          -- Clean up old entries
-          if entry.sample_index < current_sample - 96000 then
-            visualizer.rms_buffer_read = (read_pos % visualizer.rms_buffer_size) + 1
-          end
         end
-
-        read_pos = (read_pos % visualizer.rms_buffer_size) + 1
       end
 
       -- ALWAYS LOG - ungated for observability
-      debug("[vizLoop#%d] elapsed=%.1fs | cur_sample=%d | scanned=%d | read=%d write=%d | best_dist=%d | rms=%s | level=%.3f",
-        iteration, elapsed_s, current_sample, entries_scanned,
-        visualizer.rms_buffer_read, visualizer.rms_buffer_write,
+      debug("[vizLoop#%d] elapsed=%.1fs | cur_sample=%d | list_size=%d | best_dist=%d | rms=%s | level=%.3f",
+        iteration, elapsed_s, current_sample, list_size,
         best_distance, tostring(target_rms), visualizer.last_level)
 
       -- Apply the RMS value if found
@@ -2593,6 +2447,21 @@ local function visualizerLoop()
         -- Directly update redstone output as fast as we can
         apply_redstone_output(visualizer.last_level)
         debug("[vizLoop#%d] UPDATED: %.3f -> %.3f (redstone set)", iteration, old_level, visualizer.last_level)
+      end
+
+      -- Clean up old entries (more than 5 seconds behind)
+      if list_size > 500 then  -- ~10 seconds of data
+        local cleanup_count = 0
+        for i = list_size, 1, -1 do
+          local entry = visualizer.rms_list[i]
+          if entry and entry.sample_index and entry.sample_index < current_sample - 240000 then
+            table.remove(visualizer.rms_list, i)
+            cleanup_count = cleanup_count + 1
+          end
+        end
+        if cleanup_count > 0 then
+          debug("[vizLoop#%d] Cleaned up %d old entries", iteration, cleanup_count)
+        end
       end
 
       -- Very tight loop - no sleep, run as fast as possible
