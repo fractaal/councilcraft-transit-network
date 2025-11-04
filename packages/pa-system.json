@@ -1,7 +1,7 @@
 {
   "name": "pa-system",
-  "version": "0.2.19-sample-based-sync",
-  "description": "CouncilCraft PA & Entertainment System - SIMPLIFIED visualizer sync to use sample indices instead of timestamps. Uses the exact same calculation as display (elapsed_time * sample_rate) to find current sample, then finds closest RMS value by sample index. Much simpler and accurate!",
+  "version": "0.2.20-20hz-viz-rate",
+  "description": "CouncilCraft PA & Entertainment System - increased visualizer update rate to 20Hz (50ms) to match redstone update speed. Provides smoother, more responsive visualization.",
   "files": [
     {
       "path": "/apps/pa_system/pa_system.lua",

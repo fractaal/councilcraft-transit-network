@@ -1,7 +1,7 @@
 -- CouncilCraft PA & Entertainment System
 -- Standalone controller for local audio playback + announcements
 
-local VERSION = "0.2.19-sample-based-sync"
+local VERSION = "0.2.20-20hz-viz-rate"
 
 local dfpwm = require("cc.audio.dfpwm")
 
@@ -122,7 +122,7 @@ local visualizer = {
   window_samples = 960,        -- ~20ms frames for tighter sync
   smoothing_factor = 0.25,
   decay_tau_ms = 120,
-  render_interval_ms = 25,
+  render_interval_ms = 10,  -- 100Hz for very responsive visualization
   playback_latency_ms = 0,     -- Speaker buffer latency compensation (adjustable)
   active = false,
   label = nil,
@@ -270,11 +270,7 @@ local function visualizer_queue_render()
   if not visualizer_should_render() then
     return
   end
-  local now = os.epoch("utc")
-  if now - visualizer.last_render_epoch < visualizer.render_interval_ms then
-    return
-  end
-  visualizer.last_render_epoch = now
+  -- Remove throttle - let timer handle rate limiting
   os.queueEvent("render_ui")
 end
 
@@ -1717,7 +1713,11 @@ local function uiLoop()
             marquee_timer = os.startTimer(MARQUEE_SCROLL_INTERVAL)
           else
             -- Use visualizer update rate
-            marquee_timer = os.startTimer(visualizer.render_interval_ms / 1000)
+            local interval = visualizer.render_interval_ms / 1000
+            if math.random() < 0.05 then  -- 5% debug sampling
+              debug("[uiLoop] Viz timer fired, re-arming for %.3fs", interval)
+            end
+            marquee_timer = os.startTimer(interval)
           end
         else
           marquee_timer = nil
