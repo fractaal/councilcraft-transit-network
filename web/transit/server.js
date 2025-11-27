@@ -19,8 +19,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/control-plane/ops-state', (req, res) => {
   latestOpsState = req.body || null;
 
-  // If ops never told us about this line before but we have overrides,
-  // we still send them back so ops can honour them when the line appears.
+  // Sync maintenance state from ops telemetry.
+  // Ops may guard against clearing maintenance (e.g., not all stations in SHUTDOWN yet),
+  // so we trust the ops-reported maintenance state as the source of truth.
+  if (latestOpsState && latestOpsState.lines) {
+    for (const [lineId, lineInfo] of Object.entries(latestOpsState.lines)) {
+      if (lineInfo && typeof lineInfo.maintenance === 'boolean') {
+        lineOverrides[lineId] = { ...(lineOverrides[lineId] || {}), maintenance: lineInfo.maintenance };
+      }
+    }
+  }
+
+  // Send current overrides to ops (including any pending requests).
   res.json({ lines: lineOverrides });
 });
 

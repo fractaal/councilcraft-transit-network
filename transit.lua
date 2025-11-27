@@ -5,8 +5,8 @@
 -- ============================================================================
 -- ============================================================================
 
-local VERSION = "v0.10.16"
-local DESCRIPTOR="control-plane-telemetry"
+local VERSION = "v0.10.17"
+local DESCRIPTOR="per-line-maintenance"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -2080,6 +2080,60 @@ local function runOps(config)
 	        return state
 	    end
 
+	    -- Per-line maintenance state tracking for shutdown sequencing
+	    local line_maintenance_requested = {}  -- line_id -> true if waiting for carts to board before shutdown
+
+	    -- Check if all stations on a line are ready (cart present + BOARDING)
+	    local function checkLineCartsReady(line_id)
+	        local lines = groupStationsByLine()
+	        local line_stations = lines[line_id]
+	        if not line_stations or #line_stations == 0 then return false end
+
+	        for _, station in ipairs(line_stations) do
+	            if not station.cart_present or station.state ~= "BOARDING" then
+	                return false
+	            end
+	        end
+	        return true
+	    end
+
+	    -- Check if all stations on a line are in SHUTDOWN
+	    local function checkLineInShutdown(line_id)
+	        local lines = groupStationsByLine()
+	        local line_stations = lines[line_id]
+	        if not line_stations or #line_stations == 0 then return false end
+
+	        for _, station in ipairs(line_stations) do
+	            if station.state ~= "SHUTDOWN" then
+	                return false
+	            end
+	        end
+	        return true
+	    end
+
+	    -- Send SHUTDOWN to all stations on a specific line
+	    local function shutdownLine(line_id)
+	        local lines = groupStationsByLine()
+	        local line_stations = lines[line_id]
+	        if not line_stations then return end
+
+	        print("[" .. os.date("%H:%M:%S") .. "] SHUTTING DOWN LINE " .. line_id)
+	        for _, station in ipairs(line_stations) do
+	            local msg = protocol.createShutdown("ops_center", station.station_id)
+	            network.broadcast(modem, config.network_channel, msg)
+	        end
+	        line_maintenance_requested[line_id] = nil
+	    end
+
+	    -- Process per-line maintenance requests (wait for carts, then shutdown)
+	    local function processLineMaintenance()
+	        for line_id, _ in pairs(line_maintenance_requested) do
+	            if checkLineCartsReady(line_id) then
+	                shutdownLine(line_id)
+	            end
+	        end
+	    end
+
 	    -- Apply control plane response, currently supporting per-line maintenance
 	    -- flags. The control plane is expected to respond with JSON in the form:
 	    -- { lines = { ["red_line"] = { maintenance = true }, ... } }
@@ -2090,9 +2144,37 @@ local function runOps(config)
 	        local new_overrides = {}
 	        for line_id, line_cfg in pairs(data.lines) do
 	            if type(line_cfg) == "table" then
+	                local was_maintenance = external_line_overrides[line_id] and external_line_overrides[line_id].maintenance
+	                local now_maintenance = not not line_cfg.maintenance
+
 	                new_overrides[line_id] = {
-	                    maintenance = not not line_cfg.maintenance,
+	                    maintenance = now_maintenance,
 	                }
+
+	                -- Maintenance toggled ON: request shutdown for this line
+	                if now_maintenance and not was_maintenance then
+	                    print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance requested for line: " .. line_id)
+	                    if checkLineCartsReady(line_id) then
+	                        -- All carts ready, shutdown immediately
+	                        shutdownLine(line_id)
+	                    else
+	                        -- Wait for carts to board
+	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Waiting for carts to board on line: " .. line_id)
+	                        line_maintenance_requested[line_id] = true
+	                    end
+	                end
+
+	                -- Maintenance toggled OFF: only allow if all stations already in SHUTDOWN
+	                if not now_maintenance and was_maintenance then
+	                    if not checkLineInShutdown(line_id) then
+	                        -- Guard: don't clear maintenance until all stations are shutdown
+	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Cannot clear maintenance for line " .. line_id .. " - not all stations in SHUTDOWN")
+	                        new_overrides[line_id].maintenance = true  -- Keep maintenance ON
+	                    else
+	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
+	                        line_maintenance_requested[line_id] = nil
+	                    end
+	                end
 	            end
 	        end
 
@@ -2609,8 +2691,11 @@ local function runOps(config)
         -- Process non-blocking dispatch delays for each line
         processDispatchDelays(now)
 
-        -- Process shutdown request
+        -- Process shutdown request (global)
         processShutdown()
+
+        -- Process per-line maintenance requests (from control plane)
+        processLineMaintenance()
 
 	        -- Periodic modem health check (every 30 seconds)
 	        if now - last_modem_check > 30 then
