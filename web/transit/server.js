@@ -19,18 +19,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/control-plane/ops-state', (req, res) => {
   latestOpsState = req.body || null;
 
-  // Sync maintenance state from ops telemetry.
-  // Ops may guard against clearing maintenance (e.g., not all stations in SHUTDOWN yet),
-  // so we trust the ops-reported maintenance state as the source of truth.
-  if (latestOpsState && latestOpsState.lines) {
-    for (const [lineId, lineInfo] of Object.entries(latestOpsState.lines)) {
-      if (lineInfo && typeof lineInfo.maintenance === 'boolean') {
-        lineOverrides[lineId] = { ...(lineOverrides[lineId] || {}), maintenance: lineInfo.maintenance };
-      }
-    }
-  }
-
-  // Send current overrides to ops (including any pending requests).
+  // If ops never told us about this line before but we have overrides,
+  // we still send them back so ops can honour them when the line appears.
   res.json({ lines: lineOverrides });
 });
 
@@ -39,6 +29,15 @@ app.get('/api/state', (req, res) => {
   res.json({ ops: latestOpsState, overrides: lineOverrides });
 });
 
+// Helper: can we safely clear maintenance for a line?
+// We only allow clearing once ALL stations on that line are in SHUTDOWN.
+function canClearMaintenance(lineId) {
+  if (!latestOpsState || !latestOpsState.lines) return false;
+  const line = latestOpsState.lines[lineId];
+  if (!line || !Array.isArray(line.stations) || line.stations.length === 0) return false;
+  return line.stations.every((st) => st && st.state === 'SHUTDOWN');
+}
+
 // Browser UI toggles line-level maintenance here.
 app.post('/api/lines/:lineId/maintenance', (req, res) => {
   const lineId = req.params.lineId;
@@ -46,13 +45,25 @@ app.post('/api/lines/:lineId/maintenance', (req, res) => {
     return res.status(400).json({ error: 'Missing lineId' });
   }
 
-  const maintenance = !!(req.body && req.body.maintenance);
+  const requested = !!(req.body && req.body.maintenance);
 
-  // Ensure we always store a simple boolean flag.
   const current = lineOverrides[lineId] || {};
-  lineOverrides[lineId] = { ...current, maintenance };
 
-  res.json({ ok: true, lineId, maintenance });
+  if (requested) {
+    // Always allow entering maintenance: this marks the line "for maintenance".
+    lineOverrides[lineId] = { ...current, maintenance: true };
+    return res.json({ ok: true, lineId, maintenance: true });
+  }
+
+  // requested === false: only allow clearing if all stations are already in SHUTDOWN.
+  if (canClearMaintenance(lineId)) {
+    lineOverrides[lineId] = { ...current, maintenance: false };
+  } else {
+    // Guard: keep maintenance latched until the line is fully in maintenance.
+    lineOverrides[lineId] = { ...current, maintenance: true };
+  }
+
+  res.json({ ok: true, lineId, maintenance: lineOverrides[lineId].maintenance });
 });
 
 // Simple health check

@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-local VERSION = "v0.10.17"
+local VERSION = "v0.10.18"
 local DESCRIPTOR="per-line-maintenance"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
@@ -2125,6 +2125,17 @@ local function runOps(config)
 	        line_maintenance_requested[line_id] = nil
 	    end
 
+	    -- Restart operations for a specific line by sending DISPATCH to each station
+	    local function restartLineFromMaintenance(line_id)
+	        local lines = groupStationsByLine()
+	        local line_stations = lines[line_id]
+	        if not line_stations or #line_stations == 0 then return end
+
+	        print("")
+	        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Restarting line " .. line_id .. " from maintenance")
+	        dispatchLine(line_id, line_stations)
+	    end
+
 	    -- Process per-line maintenance requests (wait for carts, then shutdown)
 	    local function processLineMaintenance()
 	        for line_id, _ in pairs(line_maintenance_requested) do
@@ -2173,6 +2184,8 @@ local function runOps(config)
 	                    else
 	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
 	                        line_maintenance_requested[line_id] = nil
+	                        -- Per-line equivalent of pressing 'd' (force dispatch) for this line only
+	                        restartLineFromMaintenance(line_id)
 	                    end
 	                end
 	            end
