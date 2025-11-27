@@ -3,11 +3,10 @@
 -- Real-time trip monitoring with live delay detection!
 
 -- ============================================================================
--- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.15"
-local DESCRIPTOR="per-line-dispatch"
+local VERSION = "v0.10.16"
+local DESCRIPTOR="control-plane-telemetry"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -459,7 +458,9 @@ local SCRIPT_OPS_CONFIG = {
     update_check_interval = 60,    -- Seconds between remote version checks (GitHub)
     dispatch_delay = 1,            -- Seconds to wait before dispatching (ensures audio completes + boarding time)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
-    github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua"  -- GitHub raw URL for remote updates
+	github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua",  -- GitHub raw URL for remote updates
+	control_plane_url = nil,           -- If set, ops will POST telemetry JSON here and consume line-level flags
+	control_plane_push_interval = 2    -- Seconds between control plane telemetry pushes
 }
 
 -- ===================================================================
@@ -1629,13 +1630,13 @@ local function runStation(config)
             last_state_save = now
         end
 
-        -- Periodic modem health check (every 30 seconds)
-        if now - last_modem_check > 30 then
-            network.checkHealth(modem, config.network_channel)
-            last_modem_check = now
-        end
-
-        -- Update display
+	    	-- Periodic modem health check (every 30 seconds)
+	    	if now - last_modem_check > 30 then
+	    	    network.checkHealth(modem, config.network_channel)
+	    	    last_modem_check = now
+	    	end
+	    	
+	    	-- Update display
         if now - last_display_update > config.display_update_interval then
             displayStationStatus()
             anim_frame = anim_frame + 1
@@ -1663,7 +1664,11 @@ local function runOps(config)
     local update_available = false
     local remote_version = nil
     local last_update_check = 0
-    local line_states = {}  -- Per-line dispatch state
+	local line_states = {}  -- Per-line dispatch state
+	local external_line_overrides = {}  -- Line-level overrides from external control plane (e.g., maintenance flags)
+	local control_plane_disabled = false
+	local last_control_plane_push = 0
+	local control_plane_pending = false
 
     -- Setup
     term.clear()
@@ -1900,7 +1905,14 @@ local function runOps(config)
 
             local state = getLineState(line_id)
 
-            if not shutdown_requested and line_ready then
+	            -- Check if this line is currently placed into maintenance by the
+	            -- external control plane. When a line is in maintenance, we
+	            -- explicitly do NOT arm dispatch for it, even if all carts are
+	            -- present and boarding.
+	            local override = external_line_overrides[line_id]
+	            local in_maintenance = override and override.maintenance
+
+	            if not shutdown_requested and not in_maintenance and line_ready then
                 -- All stations on this line are BOARDING with carts present: arm dispatch
                 if not state.dispatched and state.dispatch_state == "idle" then
                     scheduleLineDispatch(line_id, line_stations, now)
@@ -1909,7 +1921,7 @@ local function runOps(config)
                 -- Line no longer ready (or shutdown in progress): cancel pending dispatch and
                 -- allow a fresh cycle next time it becomes ready.
                 if state.dispatch_state ~= "idle" then
-                    print("[" .. os.date("%H:%M:%S") .. "] Line " .. line_id .. " no longer ready - cancelling pending dispatch")
+	                    print("[" .. os.date("%H:%M:%S") .. "] Line " .. line_id .. " no longer ready or in maintenance - cancelling pending dispatch")
                 end
                 clearLineDispatchState(line_id)
             end
@@ -1978,7 +1990,156 @@ local function runOps(config)
         end
     end
 
-    -- Display status on monitor
+	    -------------------------------------------------------------------------
+	    -- CONTROL PLANE TELEMETRY (OPS ONLY)
+	    -------------------------------------------------------------------------
+
+	    -- Build a compact snapshot of current ops state suitable for sending as
+	    -- JSON to an external control plane. This is intentionally conservative
+	    -- to keep payloads small for ComputerCraft HTTP.
+	    local function buildControlPlaneState(now)
+	        local state = {
+	            type = "ops_state",
+	            version = VERSION,
+	            descriptor = DESCRIPTOR,
+	            timestamp = now,
+	            station_count = 0,
+	            carts_present = 0,
+	            shutdown_requested = shutdown_requested,
+	            update_available = update_available,
+	            remote_version = remote_version,
+	            lines = {},
+	        }
+
+	        local lines = groupStationsByLine()
+	
+	        -- Per-line summary and per-station details
+	        for line_id, line_stations in pairs(lines) do
+	            local line_info = {
+	                line_id = line_id,
+	                station_count = #line_stations,
+	                carts_present = 0,
+	                all_carts_present = true,
+	                all_boarding = true,
+	                dispatch_state = nil,
+	                dispatch_eta = nil,
+	                maintenance = false,
+	                stations = {},
+	            }
+
+	            local ls = line_states[line_id]
+	            if ls then
+	                line_info.dispatch_state = ls.dispatch_state
+	                if ls.dispatch_state == "waiting" and ls.dispatch_start_time and config.dispatch_delay > 0 then
+	                    local elapsed = now - ls.dispatch_start_time
+	                    local eta = config.dispatch_delay - elapsed
+	                    if eta < 0 then eta = 0 end
+	                    line_info.dispatch_eta = eta
+	                end
+	            end
+
+	            local override = external_line_overrides[line_id]
+	            if override and override.maintenance then
+	                line_info.maintenance = true
+	            end
+
+	            for _, station in ipairs(line_stations) do
+	                state.station_count = state.station_count + 1
+	                if station.cart_present then
+	                    state.carts_present = state.carts_present + 1
+	                    line_info.carts_present = line_info.carts_present + 1
+	                else
+	                    line_info.all_carts_present = false
+	                end
+
+	                if station.state ~= "BOARDING" then
+	                    line_info.all_boarding = false
+	                end
+
+	                local heartbeat_age = now - (station.last_heartbeat or now)
+	                local station_info = {
+	                    station_id = station.station_id,
+	                    line_id = station.line_id,
+	                    state = station.state,
+	                    cart_present = station.cart_present,
+	                    trip_status = station.trip_status,
+	                    avg_trip_time = station.avg_trip_time,
+	                    current_trip_duration = station.current_trip_duration,
+	                    last_completed_trip_time = station.last_completed_trip_time,
+	                    has_display = station.has_display,
+	                    version = station.version,
+	                    last_heartbeat = station.last_heartbeat,
+	                    heartbeat_age = heartbeat_age,
+	                }
+	                table.insert(line_info.stations, station_info)
+	            end
+
+	            state.lines[line_id] = line_info
+	        end
+
+	        return state
+	    end
+
+	    -- Apply control plane response, currently supporting per-line maintenance
+	    -- flags. The control plane is expected to respond with JSON in the form:
+	    -- { lines = { ["red_line"] = { maintenance = true }, ... } }
+	    local function applyControlPlaneResponse(data)
+	        if type(data) ~= "table" then return end
+	        if type(data.lines) ~= "table" then return end
+
+	        local new_overrides = {}
+	        for line_id, line_cfg in pairs(data.lines) do
+	            if type(line_cfg) == "table" then
+	                new_overrides[line_id] = {
+	                    maintenance = not not line_cfg.maintenance,
+	                }
+	            end
+	        end
+
+	        external_line_overrides = new_overrides
+	    end
+
+	    -- Schedule an asynchronous HTTP POST with the current ops snapshot.
+	    -- We use http.request so that the main event loop remains responsive.
+	    local function scheduleControlPlanePush(now)
+	        if control_plane_disabled then return end
+	        if not config.control_plane_url or config.control_plane_url == "" then return end
+	        if control_plane_pending then return end
+
+	        if not http or not http.request then
+	            if MODEM_DEBUG then
+	                print("[CTRL] HTTP API not available; disabling control plane integration.")
+	            end
+	            control_plane_disabled = true
+	            return
+	        end
+
+	        local payload = buildControlPlaneState(now)
+	        local ok_encode, json_or_err = pcall(textutils.serializeJSON, payload)
+	        if not ok_encode then
+	            if MODEM_DEBUG then
+	                print("[CTRL] Failed to encode control plane payload: " .. tostring(json_or_err))
+	            end
+	            return
+	        end
+
+	        control_plane_pending = true
+	        local ok_req, err = pcall(http.request, {
+	            url = config.control_plane_url,
+	            method = "POST",
+	            body = json_or_err,
+	            headers = { ["Content-Type"] = "application/json" },
+	            timeout = 5,
+	        })
+	        if not ok_req then
+	            if MODEM_DEBUG then
+	                print("[CTRL] http.request error: " .. tostring(err))
+	            end
+	            control_plane_pending = false
+	        end
+	    end
+
+	    -- Display status on monitor
     local mon = display.getOutput()
 
     -- Set text scale for more screen space (ops center only)
@@ -2022,9 +2183,15 @@ local function runOps(config)
         for line_id, line_stations in pairs(lines) do
             -- Line header with colored badge
             mon.setCursorPos(2, y)
-            mon.setTextColor(colors.black)
-            mon.setBackgroundColor(colors.cyan)
-            mon.write(" " .. string.upper(line_id) .. " ")
+	            local override = external_line_overrides[line_id]
+	            local in_maintenance = override and override.maintenance
+	            mon.setTextColor(colors.black)
+	            if in_maintenance then
+	                mon.setBackgroundColor(colors.red)
+	            else
+	                mon.setBackgroundColor(colors.cyan)
+	            end
+	            mon.write(" " .. string.upper(line_id) .. " ")
             mon.setBackgroundColor(colors.black)
 
             -- Line stats
@@ -2445,13 +2612,25 @@ local function runOps(config)
         -- Process shutdown request
         processShutdown()
 
-        -- Periodic modem health check (every 30 seconds)
-        if now - last_modem_check > 30 then
-            network.checkHealth(modem, config.network_channel)
-            last_modem_check = now
-        end
+	        -- Periodic modem health check (every 30 seconds)
+	        if now - last_modem_check > 30 then
+	            network.checkHealth(modem, config.network_channel)
+	            last_modem_check = now
+	        end
 
-        -- Periodic update check (GitHub)
+	        -- Periodic control plane telemetry push (ops -> external controller)
+	        if config.control_plane_url and config.control_plane_url ~= "" then
+	            if last_control_plane_push == 0 then
+	                last_control_plane_push = now
+	            end
+	            local interval = config.control_plane_push_interval or 2
+	            if interval > 0 and (now - last_control_plane_push) >= interval then
+	                scheduleControlPlanePush(now)
+	                last_control_plane_push = now
+	            end
+	        end
+
+	        -- Periodic update check (GitHub)
         if now - last_update_check >= config.update_check_interval then
             checkRemoteVersion()
             last_update_check = now
@@ -2505,30 +2684,65 @@ local function runOps(config)
             elseif param1 == "h" then
                 showHelp()
             end
-        elseif event == "modem_message" then
-            -- Network message
-            os.cancelTimer(timer)
-            local modem_side = param1
-            local channel = param2
-            local message = param4
-            if MODEM_DEBUG then print("[DEBUG] Ops center RX: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel)) end
-            if type(message) == "string" then
-                if MODEM_DEBUG then print("[DEBUG] Message size: " .. #message .. "B") end
-                local decoded = protocol.deserialize(message)
-                if decoded then
-                    local msg_type = decoded.type or "UNKNOWN"
-                    local msg_from = decoded.from or "?"
-                    if MODEM_DEBUG then print("[DEBUG] Ops center received: type=" .. msg_type .. " from=" .. msg_from) end
-                    handleMessage(decoded)
-                else
-                    if MODEM_DEBUG then print("[DEBUG] ERROR: Failed to deserialize message") end
-                end
-            else
-                if MODEM_DEBUG then print("[DEBUG] ERROR: Non-string message: " .. type(message)) end
-            end
-        elseif event == "timer" and param1 == timer then
-            -- Timeout, continue loop
-        end
+	        elseif event == "modem_message" then
+	            -- Network message
+	            os.cancelTimer(timer)
+	            local modem_side = param1
+	            local channel = param2
+	            local message = param4
+	            if MODEM_DEBUG then print("[DEBUG] Ops center RX: modem=" .. tostring(modem_side) .. " ch=" .. tostring(channel)) end
+	            if type(message) == "string" then
+	                if MODEM_DEBUG then print("[DEBUG] Message size: " .. #message .. "B") end
+	                local decoded = protocol.deserialize(message)
+	                if decoded then
+	                    local msg_type = decoded.type or "UNKNOWN"
+	                    local msg_from = decoded.from or "?"
+	                    if MODEM_DEBUG then print("[DEBUG] Ops center received: type=" .. msg_type .. " from=" .. msg_from) end
+	                    handleMessage(decoded)
+	                else
+	                    if MODEM_DEBUG then print("[DEBUG] ERROR: Failed to deserialize message") end
+	                end
+	            else
+	                if MODEM_DEBUG then print("[DEBUG] ERROR: Non-string message: " .. type(message)) end
+	            end
+	        elseif event == "http_success" then
+	            -- Asynchronous HTTP response (e.g., control plane)
+	            os.cancelTimer(timer)
+	            local url = param1
+	            local handle = param2
+	            if url == config.control_plane_url and handle then
+	                local body = handle.readAll()
+	                handle.close()
+	                control_plane_pending = false
+	                if body and body ~= "" then
+	                    local ok, decoded = pcall(textutils.unserializeJSON, body)
+	                    if ok and type(decoded) == "table" then
+	                        applyControlPlaneResponse(decoded)
+	                    elseif MODEM_DEBUG then
+	                        print("[CTRL] Failed to parse control plane JSON: " .. tostring(decoded))
+	                    end
+	                end
+	            elseif handle then
+	                handle.close()
+	            end
+	        elseif event == "http_failure" then
+	            -- Asynchronous HTTP error (e.g., control plane)
+	            os.cancelTimer(timer)
+	            local url = param1
+	            local err = param2
+	            local handle = param3
+	            if url == config.control_plane_url then
+	                if MODEM_DEBUG then
+	                    print("[CTRL] Control plane HTTP failure: " .. tostring(err))
+	                end
+	                control_plane_pending = false
+	            end
+	            if handle then
+	                handle.close()
+	            end
+	        elseif event == "timer" and param1 == timer then
+	            -- Timeout, continue loop
+	        end
     end
 end
 
