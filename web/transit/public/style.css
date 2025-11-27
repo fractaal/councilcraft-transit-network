@@ -142,6 +142,10 @@ body {
 .hb-stale { color: var(--cc-yellow); }
 .hb-offline { color: var(--cc-red); }
 
+.ops-heartbeat {
+	  margin-left: auto;
+	}
+
 /* Version */
 .station-version {
   color: var(--cc-gray);

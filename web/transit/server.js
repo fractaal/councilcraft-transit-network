@@ -3,8 +3,10 @@ const path = require('path');
 
 // In-memory state for the transit control plane.
 // - latestOpsState: last snapshot posted by the ops ComputerCraft node
+// - latestOpsStateAt: when that snapshot was received (ISO string)
 // - lineOverrides: line_id -> { maintenance: boolean, force_dispatch?: boolean }
 let latestOpsState = null;
+let latestOpsStateAt = null;
 let lineOverrides = {};
 
 const app = express();
@@ -18,6 +20,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   e.g. control_plane_url = "http://your-host:8081/control-plane/ops-state"
 app.post('/control-plane/ops-state', (req, res) => {
 	  latestOpsState = req.body || null;
+	  latestOpsStateAt = new Date().toISOString();
 
 	  // Prepare a snapshot of overrides to send to ops.
 	  // Any one-shot commands (e.g. force_dispatch) are cleared after sending
@@ -35,7 +38,7 @@ app.post('/control-plane/ops-state', (req, res) => {
 
 // Browser UI polls this for the latest state.
 app.get('/api/state', (req, res) => {
-  res.json({ ops: latestOpsState, overrides: lineOverrides });
+	  res.json({ ops: latestOpsState, overrides: lineOverrides, opsReceivedAt: latestOpsStateAt });
 });
 
 // Helper: can we safely clear maintenance for a line?

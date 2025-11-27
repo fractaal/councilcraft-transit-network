@@ -17,12 +17,13 @@
     </header>
 
     <!-- Status bar -->
-    <section class="cc-status-bar" v-if="ops">
-      <span>Stations: <span class="val">{{ ops.station_count || 0 }}</span></span>
-      <span>Carts: <span class="val">{{ ops.carts_present || 0 }}/{{ ops.station_count || 0 }}</span></span>
-      <span>Shutdown: <span :class="ops.shutdown_requested ? 'val-warn' : 'val-ok'">{{ ops.shutdown_requested ? 'REQUESTED' : 'NO' }}</span></span>
-      <span>Update: <span :class="ops.update_available ? 'val-warn' : 'val-ok'">{{ ops.update_available ? '[!!] AVAILABLE' : 'OK' }}</span></span>
-    </section>
+	    <section class="cc-status-bar" v-if="ops">
+	      <span>Stations: <span class="val">{{ ops.station_count || 0 }}</span></span>
+	      <span>Carts: <span class="val">{{ ops.carts_present || 0 }}/{{ ops.station_count || 0 }}</span></span>
+	      <span>Shutdown: <span :class="ops.shutdown_requested ? 'val-warn' : 'val-ok'">{{ ops.shutdown_requested ? 'REQUESTED' : 'NO' }}</span></span>
+	      <span>Update: <span :class="ops.update_available ? 'val-warn' : 'val-ok'">{{ ops.update_available ? '[!!] AVAILABLE' : 'OK' }}</span></span>
+	      <span class="ops-heartbeat" :class="opsHeartbeatClass()">HB OPS {{ opsHeartbeatText() }}</span>
+	    </section>
     <section class="cc-status-bar" v-else>
       <span class="cc-waiting">[!!] Waiting for ops telemetry...</span>
     </section>
@@ -118,6 +119,7 @@
       return {
         ops: null,
         overrides: {},
+	        opsReceivedAt: null,
         currentTime: '',
         frame: 0,  // Reactive animation frame
 
@@ -202,7 +204,7 @@
           }
         },
 
-        hbClass(age) {
+	        hbClass(age) {
           if (age == null) return 'hb-offline';
           if (age < 5) return 'hb-healthy';
           if (age < 10) return 'hb-stale';
@@ -214,13 +216,30 @@
           return Math.round(age) + 's';
         },
 
-        async fetchState() {
+	        opsHeartbeatClass() {
+	          if (!this.opsReceivedAt) return 'hb-offline';
+	          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
+	          const ageSec = ageMs / 1000;
+	          if (ageSec < 3) return 'hb-healthy';
+	          if (ageSec < 10) return 'hb-stale';
+	          return 'hb-offline';
+	        },
+
+	        opsHeartbeatText() {
+	          if (!this.opsReceivedAt) return 'no telemetry';
+	          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
+	          const ageSec = Math.round(ageMs / 1000);
+	          return ageSec + 's ago';
+	        },
+
+	        async fetchState() {
           try {
             const res = await fetch('/api/state');
             if (!res.ok) return;
             const data = await res.json();
             this.ops = data.ops;
             this.overrides = data.overrides || {};
+	            this.opsReceivedAt = data.opsReceivedAt || this.opsReceivedAt;
           } catch (e) {
             console.error('Failed to fetch state', e);
           }
@@ -256,10 +275,10 @@
           this.currentTime = d.toLocaleTimeString('en-GB', { hour12: false });
         },
 
-        mounted() {
-          this.fetchState();
-          this.updateTime();
-          setInterval(() => this.fetchState(), 2000);
+	        mounted() {
+	          this.fetchState();
+	          this.updateTime();
+	          setInterval(() => this.fetchState(), 1000);
           setInterval(() => this.updateTime(), 1000);
           // Animation loop at ~6.67 FPS (150ms per frame, matching in-game 0.15s display interval)
           setInterval(() => { this.frame++; }, 150);

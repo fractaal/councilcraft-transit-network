@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.20"
+	local VERSION = "v0.10.21"
 	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
@@ -459,8 +459,8 @@ local SCRIPT_OPS_CONFIG = {
     dispatch_delay = 1,            -- Seconds to wait before dispatching (ensures audio completes + boarding time)
     countdown_enabled = true,       -- Broadcast countdown messages during delay
 	github_url = "https://raw.githubusercontent.com/fractaal/councilcraft-transit-network/main/transit.lua",  -- GitHub raw URL for remote updates
-	control_plane_url = nil,           -- If set, ops will POST telemetry JSON here and consume line-level flags
-	control_plane_push_interval = 2    -- Seconds between control plane telemetry pushes
+		control_plane_url = nil,           -- If set, ops will POST telemetry JSON here and consume line-level flags
+		control_plane_push_interval = 1    -- Seconds between control plane telemetry pushes
 }
 
 -- ===================================================================
@@ -2747,17 +2747,17 @@ local function runOps(config)
 	            last_modem_check = now
 	        end
 
-	        -- Periodic control plane telemetry push (ops -> external controller)
-	        if config.control_plane_url and config.control_plane_url ~= "" then
-	            if last_control_plane_push == 0 then
-	                last_control_plane_push = now
-	            end
-	            local interval = config.control_plane_push_interval or 2
-	            if interval > 0 and (now - last_control_plane_push) >= interval then
-	                scheduleControlPlanePush(now)
-	                last_control_plane_push = now
-	            end
-	        end
+		        -- Periodic control plane telemetry push (ops -> external controller)
+		        if config.control_plane_url and config.control_plane_url ~= "" then
+		            if last_control_plane_push == 0 then
+		                last_control_plane_push = now
+		            end
+		            local interval = config.control_plane_push_interval or 1
+		            if interval > 0 and (now - last_control_plane_push) >= interval then
+		                scheduleControlPlanePush(now)
+		                last_control_plane_push = now
+		            end
+		        end
 
 	        -- Periodic update check (GitHub)
         if now - last_update_check >= config.update_check_interval then
