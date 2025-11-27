@@ -6,8 +6,8 @@
 -- VERSION
 -- ============================================================================
 
-local VERSION = "v0.10.14"
-local DESCRIPTOR="update-announcements-sequences"
+local VERSION = "v0.10.15"
+local DESCRIPTOR="per-line-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -1663,6 +1663,7 @@ local function runOps(config)
     local update_available = false
     local remote_version = nil
     local last_update_check = 0
+    local line_states = {}  -- Per-line dispatch state
 
     -- Setup
     term.clear()
@@ -1795,13 +1796,15 @@ local function runOps(config)
         end
     end
 
-    -- Check all carts present AND ready (in BOARDING state, not just ARRIVED)
+    -- Check all carts present AND ready (in BOARDING state, not just ARRIVED).
+    -- This global check is still used for SHUTDOWN behavior, but automatic
+    -- dispatching is now handled per line (see per-line helpers below).
     local function checkAllCartsPresent()
         if next(stations) == nil then
             return false
         end
 
-        for station_id, station in pairs(stations) do
+        for _, station in pairs(stations) do
             -- Station must have cart AND be in BOARDING state (not ARRIVED)
             if not station.cart_present or station.state ~= "BOARDING" then
                 return false
@@ -1811,51 +1814,130 @@ local function runOps(config)
         return true
     end
 
-    -- Send dispatch with delay and countdown (non-blocking)
-    local dispatch_state = "idle"  -- idle, waiting, dispatching
-    local dispatch_start_time = nil
-    local last_countdown = nil
+    -- Helper: group stations by line_id for display and per-line dispatch logic
+    local function groupStationsByLine()
+        local lines = {}
+        for _, station in pairs(stations) do
+            local line = station.line_id or "UNKNOWN"
+            if not lines[line] then
+                lines[line] = {}
+            end
+            table.insert(lines[line], station)
+        end
+        return lines
+    end
 
-    local function sendDispatch()
+    -- Per-line dispatch state helpers
+    local function getLineState(line_id)
+        if not line_states[line_id] then
+            line_states[line_id] = {
+                dispatch_state = "idle",      -- idle, waiting
+                dispatch_start_time = nil,
+                last_countdown = nil,
+                dispatched = false,
+            }
+        end
+        return line_states[line_id]
+    end
+
+    local function clearLineDispatchState(line_id)
+        line_states[line_id] = nil
+    end
+
+    local function resetAllLineDispatchState()
+        line_states = {}
+    end
+
+    -- Actually send DISPATCH messages for a specific line (targeting each station)
+    local function dispatchLine(line_id, line_stations)
+        print("[" .. os.date("%H:%M:%S") .. "] DISPATCHING LINE " .. line_id)
         print("")
-        print("[" .. os.date("%H:%M:%S") .. "] ===== ALL CARTS PRESENT =====")
+
+        for _, station in ipairs(line_stations) do
+            local msg = protocol.createDispatch("ops_center", station.station_id)
+            network.broadcast(modem, config.network_channel, msg)
+        end
+
+        local state = getLineState(line_id)
+        state.dispatch_state = "idle"
+        state.dispatched = true
+    end
+
+    -- Start (or immediately perform) a dispatch for a specific line
+    local function scheduleLineDispatch(line_id, line_stations, now)
+        local state = getLineState(line_id)
+
+        print("")
+        print("[" .. os.date("%H:%M:%S") .. "] ===== ALL CARTS PRESENT ON LINE " .. line_id .. " =====")
 
         if config.dispatch_delay > 0 then
-            print("[" .. os.date("%H:%M:%S") .. "] Waiting " .. config.dispatch_delay .. " seconds...")
-            dispatch_state = "waiting"
-            dispatch_start_time = os.epoch("utc") / 1000
-            last_countdown = config.dispatch_delay
+            print("[" .. os.date("%H:%M:%S") .. "] Waiting " .. config.dispatch_delay .. " seconds before dispatch...")
+            state.dispatch_state = "waiting"
+            state.dispatch_start_time = now or (os.epoch("utc") / 1000)
+            state.last_countdown = config.dispatch_delay
         else
-            -- No delay, dispatch immediately
-            print("[" .. os.date("%H:%M:%S") .. "] DISPATCHING ALL STATIONS")
-            print("")
-            local msg = protocol.createDispatch("ops_center", "ALL")
-            network.broadcast(modem, config.network_channel, msg)
+            -- No delay, dispatch immediately for this line
+            dispatchLine(line_id, line_stations)
         end
     end
 
-    -- Process dispatch delay countdown (called in main loop)
-    local function processDispatchDelay()
-        if dispatch_state == "waiting" then
-            local now = os.epoch("utc") / 1000
-            local elapsed = now - dispatch_start_time
-            local remaining = math.ceil(config.dispatch_delay - elapsed)
+    -- Evaluate readiness per line and arm dispatch countdowns as needed
+    local function updateLineDispatchReadiness(now)
+        local lines = groupStationsByLine()
 
-            -- Send countdown messages
-            if config.countdown_enabled and remaining > 0 and remaining ~= last_countdown then
-                local countdownMsg = protocol.createCountdown("ops_center", remaining)
-                network.broadcast(modem, config.network_channel, countdownMsg)
-                print("[" .. os.date("%H:%M:%S") .. "] COUNTDOWN: " .. remaining .. " seconds")
-                last_countdown = remaining
+        for line_id, line_stations in pairs(lines) do
+            local station_count = #line_stations
+            local line_ready = (station_count > 0)
+
+            if line_ready then
+                for _, station in ipairs(line_stations) do
+                    if not station.cart_present or station.state ~= "BOARDING" then
+                        line_ready = false
+                        break
+                    end
+                end
             end
 
-            -- Time to dispatch!
-            if elapsed >= config.dispatch_delay then
-                print("[" .. os.date("%H:%M:%S") .. "] DISPATCHING ALL STATIONS")
-                print("")
-                local msg = protocol.createDispatch("ops_center", "ALL")
-                network.broadcast(modem, config.network_channel, msg)
-                dispatch_state = "idle"
+            local state = getLineState(line_id)
+
+            if not shutdown_requested and line_ready then
+                -- All stations on this line are BOARDING with carts present: arm dispatch
+                if not state.dispatched and state.dispatch_state == "idle" then
+                    scheduleLineDispatch(line_id, line_stations, now)
+                end
+            else
+                -- Line no longer ready (or shutdown in progress): cancel pending dispatch and
+                -- allow a fresh cycle next time it becomes ready.
+                if state.dispatch_state ~= "idle" then
+                    print("[" .. os.date("%H:%M:%S") .. "] Line " .. line_id .. " no longer ready - cancelling pending dispatch")
+                end
+                clearLineDispatchState(line_id)
+            end
+        end
+    end
+
+    -- Process dispatch delay countdowns per line (called in main loop)
+    local function processDispatchDelays(now)
+        local lines = groupStationsByLine()
+
+        for line_id, line_stations in pairs(lines) do
+            local state = line_states[line_id]
+            if state and state.dispatch_state == "waiting" then
+                local elapsed = now - state.dispatch_start_time
+                local remaining = math.ceil(config.dispatch_delay - elapsed)
+
+                -- Send countdown messages (global countdown, but logged per line)
+                if config.countdown_enabled and remaining > 0 and remaining ~= state.last_countdown then
+                    local countdownMsg = protocol.createCountdown("ops_center", remaining)
+                    network.broadcast(modem, config.network_channel, countdownMsg)
+                    print("[" .. os.date("%H:%M:%S") .. "] LINE " .. line_id .. " COUNTDOWN: " .. remaining .. " seconds")
+                    state.last_countdown = remaining
+                end
+
+                -- Time to dispatch this line!
+                if elapsed >= config.dispatch_delay then
+                    dispatchLine(line_id, line_stations)
+                end
             end
         end
     end
@@ -2268,8 +2350,9 @@ local function runOps(config)
         print("[MANUAL] Force dispatching all stations...")
         local msg = protocol.createDispatch("ops_center", "ALL")
         network.broadcast(modem, config.network_channel, msg)
-        dispatch_state = "idle"
-        dispatched = false
+        -- Clear any pending per-line dispatch state so the next readiness cycle
+        -- starts fresh after this manual override.
+        resetAllLineDispatchState()
         print("[MANUAL] Dispatch command sent!")
         print("")
     end
@@ -2282,8 +2365,9 @@ local function runOps(config)
             station.cart_present = false
             print("[MANUAL] Reset: " .. station_id)
         end
-        dispatched = false
-        dispatch_state = "idle"
+        -- Reset per-line dispatch state so we don't accidentally dispatch
+        -- based on stale readiness info.
+        resetAllLineDispatchState()
         print("[MANUAL] All stations reset to IN_TRANSIT")
         print("")
     end
@@ -2337,7 +2421,6 @@ local function runOps(config)
 
     -- Main loop
     local last_dispatch_check = 0
-    local dispatched = false
     local last_modem_check = 0
 
     while true do
@@ -2350,22 +2433,14 @@ local function runOps(config)
             last_discovery = now
         end
 
-        -- Check dispatch (skip if shutdown requested - shutdown takes priority!)
+        -- Check dispatch readiness per line (skip if shutdown requested - shutdown takes priority!)
         if now - last_dispatch_check > config.dispatch_check_interval then
-            if not shutdown_requested and checkAllCartsPresent() then
-                if not dispatched then
-                    sendDispatch()
-                    dispatched = true
-                end
-            else
-                dispatched = false
-                dispatch_state = "idle"  -- Cancel any pending dispatch if cart leaves
-            end
+            updateLineDispatchReadiness(now)
             last_dispatch_check = now
         end
 
-        -- Process non-blocking dispatch delay
-        processDispatchDelay()
+        -- Process non-blocking dispatch delays for each line
+        processDispatchDelays(now)
 
         -- Process shutdown request
         processShutdown()
