@@ -8,99 +8,116 @@
 </head>
 <body>
   <div id="app" v-scope="ControlPlane()" @mounted="mounted">
+    <!-- Header matching ops center -->
     <header class="cc-header">
-      <div class="cc-title">COUNCILCRAFT TRANSIT // CONTROL PLANE</div>
-      <div class="cc-subtitle">HTTP LINK &gt; OPS NODE</div>
+      <div class="cc-header-line">========================================</div>
+      <div class="cc-header-title">COUNCILCRAFT TRANSIT</div>
+      <div class="cc-header-subtitle">OPERATIONS CENTER</div>
+      <div class="cc-header-line">========================================</div>
     </header>
 
+    <!-- Status bar -->
     <section class="cc-status-bar" v-if="ops">
-      <div>Stations: <span class="cc-value">{{ ops.station_count || 0 }}</span></div>
-      <div>Carts Present: <span class="cc-value">{{ ops.carts_present || 0 }}</span></div>
-      <div>Shutdown: <span class="cc-value">{{ ops.shutdown_requested ? 'YES' : 'NO' }}</span></div>
-      <div>Update: <span class="cc-value">{{ ops.update_available ? 'AVAILABLE' : 'OK' }}</span></div>
-      <div>Version: <span class="cc-value">{{ ops.version }} ({{ ops.descriptor }})</span></div>
+      <span>Stations: <span class="val">{{ ops.station_count || 0 }}</span></span>
+      <span>Carts: <span class="val">{{ ops.carts_present || 0 }}/{{ ops.station_count || 0 }}</span></span>
+      <span>Shutdown: <span :class="ops.shutdown_requested ? 'val-warn' : 'val-ok'">{{ ops.shutdown_requested ? 'REQUESTED' : 'NO' }}</span></span>
+      <span>Update: <span :class="ops.update_available ? 'val-warn' : 'val-ok'">{{ ops.update_available ? '[!!] AVAILABLE' : 'OK' }}</span></span>
     </section>
     <section class="cc-status-bar" v-else>
-      <div class="cc-warning">Waiting for ops telemetry...</div>
+      <span class="cc-waiting">[!!] Waiting for ops telemetry...</span>
     </section>
 
-    <main class="cc-main" v-if="lines.length">
-      <section class="cc-lines">
-        <h2 class="cc-section-title">LINES</h2>
-        <div class="line-list">
-          <div
-            class="line-card"
-            v-for="line in lines"
-            :key="line.id"
-            :class="{ selected: line.id === selectedLineId, maintenance: line.maintenance }"
-            @click="selectLine(line.id)"
-          >
-            <div class="line-header">
-              <span class="line-badge">{{ line.id.toUpperCase() }}</span>
-              <button
-                class="line-maint-toggle"
-                @click.stop="toggleMaintenance(line.id, !line.maintenance)"
-              >
-                {{ line.maintenance ? 'CLEAR MAINT' : 'SET MAINT' }}
-              </button>
-            </div>
-            <div class="line-meta">
-              <span>Stations: {{ line.station_count }}</span>
-              <span>Carts: {{ line.carts_present }}</span>
-              <span>Dispatch: {{ line.dispatch_state || 'idle' }}</span>
-              <span v-if="line.dispatch_eta != null">ETA: {{ line.dispatch_eta.toFixed(1) }}s</span>
-              <span v-if="line.maintenance" class="tag-maint">MAINTENANCE</span>
-            </div>
-          </div>
+    <!-- All lines and stations -->
+    <main class="cc-lines-container" v-if="lines.length">
+      <div class="line-card" v-for="line in lines" :key="line.id">
+        <div class="line-header">
+          <span class="line-badge" :class="{ maintenance: line.maintenance }">
+            {{ line.id.toUpperCase() }}
+          </span>
+          <span class="line-stats">
+            <span class="ready-count">{{ line.carts_present }}/{{ line.station_count }}</span>
+            <span v-if="line.dispatch_state === 'armed'"> [>>] DISPATCHING</span>
+            <span v-else-if="line.dispatch_state === 'countdown'"> [..] ETA {{ line.dispatch_eta?.toFixed(1) || '?' }}s</span>
+          </span>
+          <button
+            class="line-maint-toggle"
+            :class="{ active: line.maintenance }"
+            @click="toggleMaintenance(line.id, !line.maintenance)"
+          >{{ line.maintenance ? '[X] MAINT' : '[ ] MAINT' }}</button>
         </div>
-      </section>
 
-      <section class="cc-stations" v-if="selectedLine">
-        <h2 class="cc-section-title">STATIONS // {{ selectedLine.id.toUpperCase() }}</h2>
-        <table class="cc-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>State</th>
-              <th>Cart</th>
-              <th>Trip</th>
-              <th>Avg Time</th>
-              <th>Last Trip</th>
-              <th>HB Age</th>
-              <th>Version</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="st in selectedLine.stations" :key="st.station_id">
-              <td>{{ st.station_id }}</td>
-              <td>{{ st.state || '?' }}</td>
-              <td>{{ st.cart_present ? 'YES' : 'NO' }}</td>
-              <td>{{ st.trip_status || '-' }}</td>
-              <td>{{ formatSeconds(st.avg_trip_time) }}</td>
-              <td>{{ formatSeconds(st.last_completed_trip_time) }}</td>
-              <td>{{ st.heartbeat_age != null ? st.heartbeat_age.toFixed(1) + 's' : '-' }}</td>
-              <td>{{ st.version || '-' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+        <!-- Stations for this line -->
+        <div class="station-row" v-for="st in line.stations" :key="st.station_id">
+          <!-- State icon (ASCII) -->
+          <span class="state-icon" :class="stateClass(st.state)">{{ stateIcon(st.state) }}</span>
 
-      <section class="cc-stations" v-else>
-        <h2 class="cc-section-title">STATIONS</h2>
-        <div class="cc-warning">Select a line to view its stations.</div>
-      </section>
+          <!-- Heartbeat -->
+          <span class="heartbeat" :class="hbClass(st.heartbeat_age)">[{{ formatHb(st.heartbeat_age) }}]</span>
+
+          <!-- Version -->
+          <span class="station-version">{{ st.version || '---' }}</span>
+
+          <!-- Station name -->
+          <span class="station-name">{{ st.station_id }}</span>
+
+          <!-- Status text -->
+          <span class="status-text" :class="stateClass(st.state)">{{ stateText(st.state) }}</span>
+
+          <!-- Spinner (for transit/arrived/departing) -->
+          <span class="spinner">{{ getSpinner(st.state) }}</span>
+
+          <!-- Trip timing -->
+          <span class="trip-timing" :class="tripClass(st.trip_status)" v-if="st.trip_status && st.trip_status !== 'N/A'">
+            {{ tripIcon(st.trip_status) }} {{ tripText(st.trip_status) }}
+            <span v-if="st.current_trip_duration != null && st.avg_trip_time != null">
+              {{ Math.round(st.current_trip_duration) }}s/{{ Math.round(st.avg_trip_time) }}s
+            </span>
+          </span>
+        </div>
+      </div>
     </main>
+
+    <!-- Footer -->
+    <footer class="cc-footer" v-if="ops">
+      <span class="time">{{ currentTime }}</span>
+      <span class="version">{{ ops.version }}</span>
+      <span class="status" :class="ops.update_available ? 'update' : 'ok'">
+        {{ ops.update_available ? '[!!] UPDATE' : '[OK]' }}
+      </span>
+    </footer>
   </div>
 
   <script src="https://unpkg.com/petite-vue@0.2.2/dist/petite-vue.iife.js"></script>
   <script>
     const { createApp } = PetiteVue;
 
+    // ASCII icons matching transit.lua anim.icons
+    const ICONS = {
+      on_time: '[√]',
+      delayed: '[!!]',
+      early: '[^^]',
+      waiting: '[ ]',
+      present: '[##]',
+      transit: '[>>]',
+      boarding: '[==]',
+      departing: '[<<]',
+      shutdown: '[XX]'
+    };
+
+    // Spinners matching transit.lua anim.spinners
+    const SPINNERS = {
+      dots: ['.', '..', '...', '..'],
+      progress: ['[    ]', '[=   ]', '[==  ]', '[=== ]', '[====]', '[ ===]', '[  ==]', '[   =]']
+    };
+
+    let spinnerFrame = 0;
+    setInterval(() => { spinnerFrame++; }, 150);
+
     function ControlPlane() {
       return {
         ops: null,
         overrides: {},
-        selectedLineId: null,
+        currentTime: '',
 
         get lines() {
           if (!this.ops || !this.ops.lines) return [];
@@ -112,19 +129,86 @@
           });
         },
 
-        get selectedLine() {
-          return this.lines.find(l => l.id === this.selectedLineId) || null;
+        stateIcon(state) {
+          switch (state) {
+            case 'BOARDING': return ICONS.boarding;
+            case 'IN_TRANSIT': return ICONS.transit;
+            case 'ARRIVED': return ICONS.present;
+            case 'DEPARTING': return ICONS.departing;
+            case 'SHUTDOWN': return ICONS.shutdown;
+            default: return ICONS.waiting;
+          }
         },
 
-        selectLine(id) {
-          this.selectedLineId = id;
+        stateText(state) {
+          switch (state) {
+            case 'BOARDING': return 'BRD';
+            case 'IN_TRANSIT': return 'TRT';
+            case 'ARRIVED': return 'AVD';
+            case 'DEPARTING': return 'DPT';
+            case 'SHUTDOWN': return 'MNT';
+            default: return '???';
+          }
         },
 
-        formatSeconds(v) {
-          if (v == null) return '-';
-          const n = Number(v);
-          if (!isFinite(n)) return '-';
-          return n.toFixed(1) + 's';
+        stateClass(state) {
+          switch (state) {
+            case 'BOARDING': return 'state-boarding';
+            case 'IN_TRANSIT': return 'state-transit';
+            case 'ARRIVED': return 'state-arrived';
+            case 'DEPARTING': return 'state-departing';
+            case 'SHUTDOWN': return 'state-shutdown flash-alert';
+            default: return '';
+          }
+        },
+
+        getSpinner(state) {
+          if (state === 'DEPARTING') {
+            return SPINNERS.progress[spinnerFrame % SPINNERS.progress.length];
+          }
+          if (state === 'IN_TRANSIT' || state === 'ARRIVED') {
+            return SPINNERS.dots[spinnerFrame % SPINNERS.dots.length];
+          }
+          return '';
+        },
+
+        tripIcon(status) {
+          switch (status) {
+            case 'ON TIME': return ICONS.on_time;
+            case 'EARLY': return ICONS.early;
+            case 'DELAYED': return ICONS.delayed;
+            default: return '';
+          }
+        },
+
+        tripText(status) {
+          switch (status) {
+            case 'ON TIME': return 'ONT';
+            case 'EARLY': return 'EAR';
+            case 'DELAYED': return 'DLY';
+            default: return '';
+          }
+        },
+
+        tripClass(status) {
+          switch (status) {
+            case 'ON TIME': return 'trip-ontime';
+            case 'EARLY': return 'trip-early';
+            case 'DELAYED': return 'trip-delayed flash-alert';
+            default: return '';
+          }
+        },
+
+        hbClass(age) {
+          if (age == null) return 'hb-offline';
+          if (age < 5) return 'hb-healthy';
+          if (age < 10) return 'hb-stale';
+          return 'hb-offline';
+        },
+
+        formatHb(age) {
+          if (age == null) return '---';
+          return Math.round(age) + 's';
         },
 
         async fetchState() {
@@ -134,9 +218,6 @@
             const data = await res.json();
             this.ops = data.ops;
             this.overrides = data.overrides || {};
-            if (!this.selectedLineId && this.lines.length) {
-              this.selectedLineId = this.lines[0].id;
-            }
           } catch (e) {
             console.error('Failed to fetch state', e);
           }
@@ -157,9 +238,16 @@
           }
         },
 
+        updateTime() {
+          const d = new Date();
+          this.currentTime = d.toLocaleTimeString('en-GB', { hour12: false });
+        },
+
         mounted() {
           this.fetchState();
+          this.updateTime();
           setInterval(() => this.fetchState(), 2000);
+          setInterval(() => this.updateTime(), 1000);
         }
       };
     }
