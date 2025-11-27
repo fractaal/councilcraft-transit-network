@@ -9,9 +9,13 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const PASSCODE = process.env.PASSCODE || 'COUNCILCRAFT_XD_SHIFTSPRINTERS_GALORE';
+const DEFAULT_WIDTH = 158;
+const DEFAULT_HEIGHT = 243;
 
 // Paths
-const SANJUUNI_PATH = path.join(__dirname, '../../_sanjuuni_reference/sanjuuni');
+// sanjuuni binary path: prefer explicit env var, otherwise fall back to system PATH
+// This avoids depending on a local, untracked _sanjuuni_reference build tree.
+const SANJUUNI_PATH = process.env.SANJUUNI_PATH || 'sanjuuni';
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
 const PROCESSED_DIR = path.join(__dirname, '../processed');
 const DB_PATH = path.join(__dirname, '../display-network.db');
@@ -60,6 +64,15 @@ app.get('/startup.lua', (req, res) => {
     res.sendFile(path.join(__dirname, '../startup.lua'));
 });
 
+// Public metadata for clients/UI
+app.get('/api/meta', (req, res) => {
+    res.json({
+        default_width: DEFAULT_WIDTH,
+        default_height: DEFAULT_HEIGHT,
+        updated_at: Date.now()
+    });
+});
+
 // Multer setup for file uploads
 const storage = multer.diskStorage({
     destination: UPLOADS_DIR,
@@ -93,7 +106,7 @@ function requirePasscode(req, res, next) {
 }
 
 // Process image with sanjuuni
-async function processImage(inputPath, outputPath, width = 156, height = 242) {
+async function processImage(inputPath, outputPath, width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT) {
     return new Promise((resolve, reject) => {
         const args = [
             '-i', inputPath,
@@ -124,6 +137,14 @@ async function processImage(inputPath, outputPath, width = 156, height = 242) {
             reject(new Error(`Failed to spawn sanjuuni: ${err.message}`));
         });
     });
+}
+
+function parseDimension(value, fallback) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        return fallback;
+    }
+    return parsed;
 }
 
 // API Routes
@@ -202,8 +223,8 @@ app.post('/api/upload', requirePasscode, upload.single('image'), async (req, res
         return res.status(400).json({ error: 'collection_id required' });
     }
 
-    const imageWidth = parseInt(width) || 156;
-    const imageHeight = parseInt(height) || 242;
+    const imageWidth = parseDimension(width, DEFAULT_WIDTH);
+    const imageHeight = parseDimension(height, DEFAULT_HEIGHT);
 
     const processedFilename = `${path.parse(req.file.filename).name}.bimg`;
     const processedPath = path.join(PROCESSED_DIR, processedFilename);
@@ -245,17 +266,51 @@ app.get('/api/collections/:id/images', requirePasscode, (req, res) => {
     res.json(images);
 });
 
-// PATCH /api/images/:id - Update image caption
+// PATCH /api/images/:id - Update image metadata (caption and/or collection)
 app.patch('/api/images/:id', requirePasscode, (req, res) => {
-    const { caption } = req.body;
+    const { caption, collection_id } = req.body;
     const image = db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
 
     if (!image) {
         return res.status(404).json({ error: 'Image not found' });
     }
 
-    db.prepare('UPDATE images SET caption = ? WHERE id = ?').run(caption || null, req.params.id);
-    res.json({ message: 'Caption updated' });
+    const updates = [];
+    const params = [];
+
+    if (caption !== undefined) {
+        updates.push('caption = ?');
+        params.push(caption || null);
+    }
+
+    let targetCollectionId;
+    if (collection_id !== undefined) {
+        targetCollectionId = parseInt(collection_id, 10);
+        if (!Number.isInteger(targetCollectionId)) {
+            return res.status(400).json({ error: 'collection_id must be an integer' });
+        }
+
+        const collectionExists = db.prepare('SELECT id FROM collections WHERE id = ?').get(targetCollectionId);
+        if (!collectionExists) {
+            return res.status(404).json({ error: 'Target collection not found' });
+        }
+
+        updates.push('collection_id = ?');
+        params.push(targetCollectionId);
+    }
+
+    if (updates.length === 0) {
+        return res.status(400).json({ error: 'No updates provided' });
+    }
+
+    params.push(req.params.id);
+    db.prepare(`UPDATE images SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+    res.json({
+        message: 'Image updated',
+        moved: targetCollectionId !== undefined && targetCollectionId !== image.collection_id,
+        new_collection_id: targetCollectionId ?? image.collection_id
+    });
 });
 
 // GET /api/display/:collection_id_or_name - Get slideshow data for ComputerCraft

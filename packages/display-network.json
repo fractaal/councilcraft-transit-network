@@ -1,6 +1,6 @@
 {
   "name": "display-network",
-  "version": "1.2.0",
+  "version": "1.3.1",
   "description": "Digital signage system for ComputerCraft monitors with web-based image management and smooth palette fade transitions",
   "files": [
     {

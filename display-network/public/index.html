@@ -469,8 +469,8 @@
                 <!-- Upload Section -->
                 <div class="section" id="uploadSection">
                     <h3>Upload Image</h3>
-                    <div class="resolution-info">
-                        📐 156x242 (4x6 @ 0.5)
+                    <div class="resolution-info" id="resolutionInfo">
+                        📐 158x243 (sanjuuni default)
                     </div>
 
                     <div class="file-input-wrapper">
@@ -513,6 +513,17 @@
         </div>
     </div>
 
+    <!-- Move Image Modal -->
+    <div class="modal" id="moveModal">
+        <div class="modal-content">
+            <h3>Move Image</h3>
+            <p id="moveModalCurrent" style="font-size: 13px; margin: 0 0 8px 0; color: #555;"></p>
+            <select id="moveCollectionSelect"></select>
+            <button onclick="moveImage()">Move</button>
+            <button class="secondary" onclick="closeMoveModal()">Cancel</button>
+        </div>
+    </div>
+
     <!-- Image Preview Modal -->
     <div class="modal" id="previewModal">
         <div class="modal-content">
@@ -526,9 +537,20 @@
         let passcode = null;
         let selectedCollectionId = null;
         let editingImageId = null;
+        let movingImageId = null;
+        let collectionsCache = [];
+        let defaultWidth = 158;
+        let defaultHeight = 243;
 
         // Try to load passcode from localStorage
         window.addEventListener('DOMContentLoaded', () => {
+            const resEl = document.getElementById('resolutionInfo');
+            if (resEl) {
+                resEl.textContent = `📐 ${defaultWidth}x${defaultHeight} (sanjuuni default)`;
+            }
+
+            fetchMeta();
+
             const savedPasscode = localStorage.getItem('display_network_passcode');
             if (savedPasscode) {
                 document.getElementById('passcodeInput').value = savedPasscode;
@@ -572,6 +594,8 @@
                     headers: { 'X-Passcode': passcode }
                 });
                 const collections = await response.json();
+
+                collectionsCache = collections;
 
                 const list = document.getElementById('collectionsList');
                 list.innerHTML = collections.map(c => `
@@ -697,9 +721,9 @@
             formData.append('image', fileInput.files[0]);
             formData.append('collection_id', selectedCollectionId);
             formData.append('caption', caption);
-            formData.append('width', 156);
-            formData.append('height', 242);
-
+            formData.append('width', defaultWidth);
+            formData.append('height', defaultHeight);
+            
             uploadBtn.disabled = true;
             uploadBtn.textContent = 'Processing...';
 
@@ -762,6 +786,7 @@
                             <div class="image-card-caption">${img.caption || '<em>No caption</em>'}</div>
                             <div class="image-card-actions">
                                 <button class="secondary" onclick="editCaption(${img.id}, '${(img.caption || '').replace(/'/g, "\\'")}')">Edit</button>
+                                <button onclick="openMoveModal(${img.id})">Move</button>
                                 <button class="danger" onclick="deleteImage(${img.id})">Delete</button>
                             </div>
                         </div>
@@ -791,11 +816,13 @@
                     body: JSON.stringify({ caption: newCaption })
                 });
 
+                const data = await response.json();
+
                 if (response.ok) {
                     closeModal();
                     loadImages(); // Refresh to show updated caption
                 } else {
-                    alert('Failed to update caption');
+                    alert(data.error || 'Failed to update caption');
                 }
             } catch (err) {
                 alert('Connection error');
@@ -822,6 +849,77 @@
             }
         }
 
+        function getCollectionNameById(id) {
+            const record = collectionsCache.find(c => c.id === id);
+            return record ? record.name : null;
+        }
+
+        function openMoveModal(imageId) {
+            movingImageId = imageId;
+
+            if (!collectionsCache.length) {
+                loadCollections().then(() => {
+                    if (!collectionsCache.length) {
+                        alert('Load collections before moving an image.');
+                        return;
+                    }
+                    openMoveModal(imageId);
+                });
+                return;
+            }
+
+            const select = document.getElementById('moveCollectionSelect');
+            select.innerHTML = collectionsCache
+                .map(c => `<option value="${c.id}" ${c.id === selectedCollectionId ? 'selected' : ''}>${c.name} (${c.image_count} images)</option>`)
+                .join('');
+
+            const currentName = getCollectionNameById(selectedCollectionId) || `#${selectedCollectionId}`;
+            document.getElementById('moveModalCurrent').textContent = `Current collection: ${currentName}`;
+            document.getElementById('moveModal').classList.add('active');
+        }
+
+        function closeMoveModal() {
+            movingImageId = null;
+            document.getElementById('moveModal').classList.remove('active');
+        }
+
+        async function moveImage() {
+            const targetId = parseInt(document.getElementById('moveCollectionSelect').value, 10);
+
+            if (!targetId) {
+                alert('Select a target collection.');
+                return;
+            }
+
+            if (targetId === selectedCollectionId) {
+                alert('Select a different collection to move this image.');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/images/${movingImageId}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Passcode': passcode
+                    },
+                    body: JSON.stringify({ collection_id: targetId })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    closeMoveModal();
+                    loadImages();
+                    loadCollections();
+                } else {
+                    alert(data.error || 'Failed to move image');
+                }
+            } catch (err) {
+                alert('Connection error');
+            }
+        }
+
         function showPreview(id, filename, caption) {
             document.getElementById('previewModalImg').src = `/uploads/${filename}`;
             document.getElementById('previewModalCaption').textContent = caption || 'No caption';
@@ -839,6 +937,25 @@
         document.getElementById('passcodeInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') authenticate();
         });
+
+        async function fetchMeta() {
+            try {
+                const response = await fetch('/api/meta');
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.default_width && data.default_height) {
+                    defaultWidth = data.default_width;
+                    defaultHeight = data.default_height;
+
+                    const resEl = document.getElementById('resolutionInfo');
+                    if (resEl) {
+                        resEl.textContent = `📐 ${defaultWidth}x${defaultHeight} (sanjuuni default)`;
+                    }
+                }
+            } catch (err) {
+                console.warn('Failed to load meta; using fallback defaults.', err);
+            }
+        }
     </script>
 </body>
 </html>

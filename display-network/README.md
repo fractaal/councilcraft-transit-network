@@ -7,7 +7,8 @@ Web portal for uploading images to display on ComputerCraft monitors. Images are
 ### Web Portal
 - 🔐 Passcode-protected access
 - 📁 Organize images into collections
-- 🖼️ Automatic image processing (portrait 4x6 @ 156x242)
+- 🖼️ Automatic image processing (portrait 158x243 sanjuuni default)
+- 🔀 Move images between collections after upload
 - 📝 Edit captions and delete images
 - 👁️ Preview original images in-browser
 - 🎨 Tabbed interface for upload and management
@@ -61,7 +62,7 @@ Server will start on `http://localhost:3000`
 3. **Upload Tab:**
    - Create or select a collection
    - Upload images with optional captions
-   - Images auto-process to 156x242 resolution
+   - Images auto-process to 158x243 resolution
 4. **Manage Images Tab:**
    - View all images in selected collection
    - Edit captions
@@ -126,8 +127,9 @@ display
 | POST | `/api/collections` | Create collection |
 | GET | `/api/collections/:id/images` | List images in collection |
 | POST | `/api/upload` | Upload & process image |
-| PATCH | `/api/images/:id` | Update image caption |
+| PATCH | `/api/images/:id` | Update caption or move image to another collection |
 | DELETE | `/api/images/:id` | Delete image |
+| GET | `/api/meta` | Public defaults (current sanjuuni width/height) |
 
 ### For ComputerCraft (No Auth)
 
@@ -141,11 +143,7 @@ Collection lookup supports both numeric IDs and names:
 
 ## Monitor Setup
 
-The default resolution is **156x242** for:
-- **4 monitors wide x 6 monitors tall**
-- **0.5 scale** (configured in CC)
-
-To use different setups, modify the upload form's width/height parameters.
+The default sanjuuni output resolution is **158x243** (portrait). Adjust the width/height fields on the upload form if your monitor wall uses a different arrangement or scale.
 
 ## File Structure
 
@@ -199,6 +197,15 @@ const args = [
     '-L', // CIELAB color space
     '-k'  // k-means
 ];
+```
+
+### Reprocessing Existing Images
+
+If you change the target resolution, regenerate all processed BIMG files and update stored dimensions with:
+
+```bash
+node scripts/reprocess-resolution.js [width] [height]
+# defaults to 158 243 when omitted
 ```
 
 ## Troubleshooting
