@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CouncilCraft Transit Control Plane</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app" v-scope="ControlPlane()" @vue:mounted="mounted">
+    <header class="cc-header">
+      <div class="cc-title">COUNCILCRAFT TRANSIT // CONTROL PLANE</div>
+      <div class="cc-subtitle">HTTP LINK &gt; OPS NODE</div>
+    </header>
+
+    <section class="cc-status-bar" v-if="ops">
+      <div>Stations: <span class="cc-value">{{ ops.station_count || 0 }}</span></div>
+      <div>Carts Present: <span class="cc-value">{{ ops.carts_present || 0 }}</span></div>
+      <div>Shutdown: <span class="cc-value">{{ ops.shutdown_requested ? 'YES' : 'NO' }}</span></div>
+      <div>Update: <span class="cc-value">{{ ops.update_available ? 'AVAILABLE' : 'OK' }}</span></div>
+      <div>Version: <span class="cc-value">{{ ops.version }} ({{ ops.descriptor }})</span></div>
+    </section>
+    <section class="cc-status-bar" v-else>
+      <div class="cc-warning">Waiting for ops telemetry...</div>
+    </section>
+
+    <main class="cc-main" v-if="lines.length">
+      <section class="cc-lines">
+        <h2 class="cc-section-title">LINES</h2>
+        <div class="line-list">
+          <div
+            class="line-card"
+            v-for="line in lines"
+            :key="line.id"
+            :class="{ selected: line.id === selectedLineId, maintenance: line.maintenance }"
+            @click="selectLine(line.id)"
+          >
+            <div class="line-header">
+              <span class="line-badge">{{ line.id.toUpperCase() }}</span>
+              <button
+                class="line-maint-toggle"
+                @click.stop="toggleMaintenance(line.id, !line.maintenance)"
+              >
+                {{ line.maintenance ? 'CLEAR MAINT' : 'SET MAINT' }}
+              </button>
+            </div>
+            <div class="line-meta">
+              <span>Stations: {{ line.station_count }}</span>
+              <span>Carts: {{ line.carts_present }}</span>
+              <span>Dispatch: {{ line.dispatch_state || 'idle' }}</span>
+              <span v-if="line.dispatch_eta != null">ETA: {{ line.dispatch_eta.toFixed(1) }}s</span>
+              <span v-if="line.maintenance" class="tag-maint">MAINTENANCE</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="cc-stations" v-if="selectedLine">
+        <h2 class="cc-section-title">STATIONS // {{ selectedLine.id.toUpperCase() }}</h2>
+        <table class="cc-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>State</th>
+              <th>Cart</th>
+              <th>Trip</th>
+              <th>Avg Time</th>
+              <th>Last Trip</th>
+              <th>HB Age</th>
+              <th>Version</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="st in selectedLine.stations" :key="st.station_id">
+              <td>{{ st.station_id }}</td>
+              <td>{{ st.state || '?' }}</td>
+              <td>{{ st.cart_present ? 'YES' : 'NO' }}</td>
+              <td>{{ st.trip_status || '-' }}</td>
+              <td>{{ formatSeconds(st.avg_trip_time) }}</td>
+              <td>{{ formatSeconds(st.last_completed_trip_time) }}</td>
+              <td>{{ st.heartbeat_age != null ? st.heartbeat_age.toFixed(1) + 's' : '-' }}</td>
+              <td>{{ st.version || '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="cc-stations" v-else>
+        <h2 class="cc-section-title">STATIONS</h2>
+        <div class="cc-warning">Select a line to view its stations.</div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/petite-vue@0.2.2/dist/petite-vue.iife.js"></script>
+  <script>
+    const { createApp } = PetiteVue;
+
+    function ControlPlane() {
+      return {
+        ops: null,
+        overrides: {},
+        selectedLineId: null,
+
+        get lines() {
+          if (!this.ops || !this.ops.lines) return [];
+          const entries = Object.entries(this.ops.lines);
+          entries.sort((a, b) => a[0].localeCompare(b[0]));
+          return entries.map(([id, line]) => {
+            const ov = this.overrides[id] || {};
+            return { id, ...line, maintenance: !!ov.maintenance };
+          });
+        },
+
+        get selectedLine() {
+          return this.lines.find(l => l.id === this.selectedLineId) || null;
+        },
+
+        selectLine(id) {
+          this.selectedLineId = id;
+        },
+
+        formatSeconds(v) {
+          if (v == null) return '-';
+          const n = Number(v);
+          if (!isFinite(n)) return '-';
+          return n.toFixed(1) + 's';
+        },
+
+        async fetchState() {
+          try {
+            const res = await fetch('/api/state');
+            if (!res.ok) return;
+            const data = await res.json();
+            this.ops = data.ops;
+            this.overrides = data.overrides || {};
+            if (!this.selectedLineId && this.lines.length) {
+              this.selectedLineId = this.lines[0].id;
+            }
+          } catch (e) {
+            console.error('Failed to fetch state', e);
+          }
+        },
+
+        async toggleMaintenance(lineId, nextState) {
+          try {
+            const res = await fetch(`/api/lines/${encodeURIComponent(lineId)}/maintenance`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ maintenance: nextState })
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            this.overrides[lineId] = { ...(this.overrides[lineId] || {}), maintenance: !!data.maintenance };
+          } catch (e) {
+            console.error('Failed to toggle maintenance', e);
+          }
+        },
+
+        mounted() {
+          this.fetchState();
+          setInterval(() => this.fetchState(), 2000);
+        }
+      };
+    }
+
+    createApp({ ControlPlane }).mount();
+  </script>
+</body>
+</html>
+

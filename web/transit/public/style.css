@@ -1,0 +1,197 @@
+/* CouncilCraft Transit Control Plane - 80s ComputerCraft aesthetic */
+
+:root {
+  --cc-bg: #000000;
+  --cc-bg-alt: #101010;
+  --cc-fg: #00ff00;
+  --cc-fg-dim: #00aa00;
+  --cc-accent: #00ffff; /* cyan */
+  --cc-alert: #ff0000;  /* red */
+  --cc-text-muted: #00aa88;
+  --cc-border: #005500;
+  --cc-font: "VT323", "IBM Plex Mono", "Fira Code", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--cc-bg);
+  color: var(--cc-fg);
+  font-family: var(--cc-font);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 8px 12px;
+}
+
+.cc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 2px solid var(--cc-border);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+}
+
+.cc-title {
+  letter-spacing: 0.15em;
+  font-size: 18px;
+}
+
+.cc-subtitle {
+  color: var(--cc-text-muted);
+  font-size: 11px;
+}
+
+.cc-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid var(--cc-border);
+  margin-bottom: 8px;
+}
+
+.cc-status-bar > div {
+  font-size: 11px;
+}
+
+.cc-value {
+  color: var(--cc-accent);
+}
+
+.cc-warning {
+  color: var(--cc-alert);
+}
+
+.cc-main {
+  display: grid;
+  grid-template-columns: 1.1fr 2fr;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.cc-section-title {
+  font-size: 13px;
+  margin: 0 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.cc-lines,
+.cc-stations {
+  background: var(--cc-bg-alt);
+  border: 1px solid var(--cc-border);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.line-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.line-card {
+  border: 1px solid var(--cc-border);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.line-card.selected {
+  border-color: var(--cc-accent);
+}
+
+.line-card.maintenance {
+  border-color: var(--cc-alert);
+}
+
+.line-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.line-badge {
+  background: var(--cc-accent);
+  color: #000;
+  padding: 0 4px;
+}
+
+.line-card.maintenance .line-badge {
+  background: var(--cc-alert);
+}
+
+.line-maint-toggle {
+  background: transparent;
+  color: var(--cc-fg);
+  border: 1px solid var(--cc-border);
+  font-family: var(--cc-font);
+  font-size: 10px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.line-maint-toggle:hover {
+  border-color: var(--cc-accent);
+}
+
+.line-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--cc-text-muted);
+}
+
+.tag-maint {
+  color: var(--cc-alert);
+}
+
+.cc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.cc-table th,
+.cc-table td {
+  border: 1px solid var(--cc-border);
+  padding: 2px 3px;
+  text-align: left;
+}
+
+.cc-table thead {
+  background: #002200;
+}
+
+.cc-table tbody tr:nth-child(odd) {
+  background: #050505;
+}
+
+.cc-table tbody tr:nth-child(even) {
+  background: #0b0b0b;
+}
+
+@media (max-width: 900px) {
+  .cc-main {
+    grid-template-columns: 1fr;
+  }
+}
+
