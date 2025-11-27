@@ -119,7 +119,7 @@
       return {
         ops: null,
         overrides: {},
-	        opsReceivedAt: null,
+        opsReceivedAt: null,
         currentTime: '',
         frame: 0,  // Reactive animation frame
 
@@ -216,30 +216,34 @@
           return Math.round(age) + 's';
         },
 
-	        opsHeartbeatClass() {
-	          if (!this.opsReceivedAt) return 'hb-offline';
-	          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
-	          const ageSec = ageMs / 1000;
-	          if (ageSec < 3) return 'hb-healthy';
-	          if (ageSec < 10) return 'hb-stale';
-	          return 'hb-offline';
-	        },
+        opsHeartbeatClass() {
+          // Depend on currentTime so this recomputes once per second even if ops is idle.
+          const _ = this.currentTime;
+          if (!this.opsReceivedAt) return 'hb-offline';
+          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
+          const ageSec = ageMs / 1000;
+          if (ageSec < 3) return 'hb-healthy';
+          if (ageSec < 10) return 'hb-stale';
+          return 'hb-offline';
+        },
 
-	        opsHeartbeatText() {
-	          if (!this.opsReceivedAt) return 'no telemetry';
-	          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
-	          const ageSec = Math.round(ageMs / 1000);
-	          return ageSec + 's ago';
-	        },
+        opsHeartbeatText() {
+          // Depend on currentTime so this recomputes once per second even if ops is idle.
+          const _ = this.currentTime;
+          if (!this.opsReceivedAt) return 'no telemetry';
+          const ageMs = Date.now() - Date.parse(this.opsReceivedAt);
+          const ageSec = Math.round(ageMs / 1000);
+          return ageSec + 's ago';
+        },
 
-	        async fetchState() {
+        async fetchState() {
           try {
             const res = await fetch('/api/state');
             if (!res.ok) return;
             const data = await res.json();
             this.ops = data.ops;
             this.overrides = data.overrides || {};
-	            this.opsReceivedAt = data.opsReceivedAt || this.opsReceivedAt;
+            this.opsReceivedAt = data.opsReceivedAt || this.opsReceivedAt;
           } catch (e) {
             console.error('Failed to fetch state', e);
           }

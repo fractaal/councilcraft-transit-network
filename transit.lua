@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.22"
+	local VERSION = "v0.10.23"
 	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
