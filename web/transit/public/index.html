@@ -39,6 +39,10 @@
             <span v-if="line.dispatch_state === 'armed'"> [>>] DISPATCHING</span>
             <span v-else-if="line.dispatch_state === 'countdown'"> [..] ETA {{ line.dispatch_eta?.toFixed(1) || '?' }}s</span>
           </span>
+	          <button
+	            class="line-maint-toggle"
+	            @click="forceDispatch(line.id)"
+	          >[>>] FORCE</button>
           <button
             class="line-maint-toggle"
             :class="{ active: line.maintenance }"
@@ -236,6 +240,16 @@
             console.error('Failed to toggle maintenance', e);
           }
         },
+
+	        async forceDispatch(lineId) {
+	          try {
+	            await fetch(`/api/lines/${encodeURIComponent(lineId)}/force-dispatch`, {
+	              method: 'POST'
+	            });
+	          } catch (e) {
+	            console.error('Failed to force dispatch line', lineId, e);
+	          }
+	        },
 
         updateTime() {
           const d = new Date();

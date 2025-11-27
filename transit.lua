@@ -5,8 +5,8 @@
 -- ============================================================================
 -- ============================================================================
 
-local VERSION = "v0.10.18"
-local DESCRIPTOR="per-line-maintenance"
+	local VERSION = "v0.10.19"
+	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -2125,16 +2125,30 @@ local function runOps(config)
 	        line_maintenance_requested[line_id] = nil
 	    end
 
-	    -- Restart operations for a specific line by sending DISPATCH to each station
-	    local function restartLineFromMaintenance(line_id)
-	        local lines = groupStationsByLine()
-	        local line_stations = lines[line_id]
-	        if not line_stations or #line_stations == 0 then return end
-
-	        print("")
-	        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Restarting line " .. line_id .. " from maintenance")
-	        dispatchLine(line_id, line_stations)
-	    end
+		    -- Restart operations for a specific line by sending DISPATCH to each station
+		    local function restartLineFromMaintenance(line_id)
+		        local lines = groupStationsByLine()
+		        local line_stations = lines[line_id]
+		        if not line_stations or #line_stations == 0 then return end
+		
+		        print("")
+		        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Restarting line " .. line_id .. " from maintenance")
+		        dispatchLine(line_id, line_stations)
+		    end
+		
+		    -- Force dispatch for a specific line (manual override, like 'd' but scoped)
+		    local function forceDispatchLine(line_id)
+		        local lines = groupStationsByLine()
+		        local line_stations = lines[line_id]
+		        if not line_stations or #line_stations == 0 then
+		            print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Force dispatch requested for unknown/empty line: " .. tostring(line_id))
+		            return
+		        end
+		
+		        print("")
+		        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Force dispatching line " .. line_id .. " from control plane")
+		        dispatchLine(line_id, line_stations)
+		    end
 
 	    -- Process per-line maintenance requests (wait for carts, then shutdown)
 	    local function processLineMaintenance()
@@ -2145,54 +2159,61 @@ local function runOps(config)
 	        end
 	    end
 
-	    -- Apply control plane response, currently supporting per-line maintenance
-	    -- flags. The control plane is expected to respond with JSON in the form:
-	    -- { lines = { ["red_line"] = { maintenance = true }, ... } }
+		    -- Apply control plane response, currently supporting per-line maintenance
+		    -- flags and one-shot per-line force dispatch commands. The control plane
+		    -- is expected to respond with JSON in the form:
+		    -- { lines = { ["red_line"] = { maintenance = true, force_dispatch = true }, ... } }
 	    local function applyControlPlaneResponse(data)
 	        if type(data) ~= "table" then return end
 	        if type(data.lines) ~= "table" then return end
 
 	        local new_overrides = {}
-	        for line_id, line_cfg in pairs(data.lines) do
-	            if type(line_cfg) == "table" then
-	                local was_maintenance = external_line_overrides[line_id] and external_line_overrides[line_id].maintenance
-	                local now_maintenance = not not line_cfg.maintenance
-
-	                new_overrides[line_id] = {
-	                    maintenance = now_maintenance,
-	                }
-
-	                -- Maintenance toggled ON: request shutdown for this line
-	                if now_maintenance and not was_maintenance then
-	                    print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance requested for line: " .. line_id)
-	                    if checkLineCartsReady(line_id) then
-	                        -- All carts ready, shutdown immediately
-	                        shutdownLine(line_id)
-	                    else
-	                        -- Wait for carts to board
-	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Waiting for carts to board on line: " .. line_id)
-	                        line_maintenance_requested[line_id] = true
-	                    end
-	                end
-
-	                -- Maintenance toggled OFF: only allow if all stations already in SHUTDOWN
-	                if not now_maintenance and was_maintenance then
-	                    if not checkLineInShutdown(line_id) then
-	                        -- Guard: don't clear maintenance until all stations are shutdown
-	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Cannot clear maintenance for line " .. line_id .. " - not all stations in SHUTDOWN")
-	                        new_overrides[line_id].maintenance = true  -- Keep maintenance ON
-	                    else
-	                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
-	                        line_maintenance_requested[line_id] = nil
-	                        -- Per-line equivalent of pressing 'd' (force dispatch) for this line only
-	                        restartLineFromMaintenance(line_id)
-	                    end
-	                end
-	            end
-	        end
-
-	        external_line_overrides = new_overrides
-	    end
+		        for line_id, line_cfg in pairs(data.lines) do
+		            if type(line_cfg) == "table" then
+		                local was_maintenance = external_line_overrides[line_id] and external_line_overrides[line_id].maintenance
+		                local now_maintenance = not not line_cfg.maintenance
+		
+		                new_overrides[line_id] = {
+		                    maintenance = now_maintenance,
+		                }
+		
+		                -- Maintenance toggled ON: request shutdown for this line
+		                if now_maintenance and not was_maintenance then
+		                    print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance requested for line: " .. line_id)
+		                    if checkLineCartsReady(line_id) then
+		                        -- All carts ready, shutdown immediately
+		                        shutdownLine(line_id)
+		                    else
+		                        -- Wait for carts to board
+		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Waiting for carts to board on line: " .. line_id)
+		                        line_maintenance_requested[line_id] = true
+		                    end
+		                end
+		
+		                -- Maintenance toggled OFF: only allow if all stations already in SHUTDOWN
+		                if not now_maintenance and was_maintenance then
+		                    if not checkLineInShutdown(line_id) then
+		                        -- Guard: don't clear maintenance until all stations are shutdown
+		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Cannot clear maintenance for line " .. line_id .. " - not all stations in SHUTDOWN")
+		                        new_overrides[line_id].maintenance = true  -- Keep maintenance ON
+		                    else
+		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
+		                        line_maintenance_requested[line_id] = nil
+		                        -- Per-line equivalent of pressing 'd' (force dispatch) for this line only
+		                        restartLineFromMaintenance(line_id)
+		                    end
+		                end
+		
+		                -- One-shot manual force dispatch for this line from the control plane
+		                if line_cfg.force_dispatch then
+		                    print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Force dispatch requested for line (control plane): " .. line_id)
+		                    forceDispatchLine(line_id)
+		                end
+		            end
+		        end
+		
+		        external_line_overrides = new_overrides
+		    end
 
 	    -- Schedule an asynchronous HTTP POST with the current ops snapshot.
 	    -- We use http.request so that the main event loop remains responsive.

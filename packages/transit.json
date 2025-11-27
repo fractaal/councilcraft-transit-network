@@ -1,6 +1,6 @@
 {
-  "name": "transit",
-  "version": "v0.10.16-control-plane-telemetry",
+	"name": "transit",
+	"version": "v0.10.19-per-line-maintenance+force-dispatch",
   "description": "CouncilCraft Transit network controller/station software.",
   "files": [
     {

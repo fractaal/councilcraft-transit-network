@@ -3,7 +3,7 @@ const path = require('path');
 
 // In-memory state for the transit control plane.
 // - latestOpsState: last snapshot posted by the ops ComputerCraft node
-// - lineOverrides: line_id -> { maintenance: boolean }
+// - lineOverrides: line_id -> { maintenance: boolean, force_dispatch?: boolean }
 let latestOpsState = null;
 let lineOverrides = {};
 
@@ -17,12 +17,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 // transit.lua should set control_plane_url to this endpoint.
 //   e.g. control_plane_url = "http://your-host:8081/control-plane/ops-state"
 app.post('/control-plane/ops-state', (req, res) => {
-  latestOpsState = req.body || null;
+	  latestOpsState = req.body || null;
 
-  // If ops never told us about this line before but we have overrides,
-  // we still send them back so ops can honour them when the line appears.
-  res.json({ lines: lineOverrides });
-});
+	  // Prepare a snapshot of overrides to send to ops.
+	  // Any one-shot commands (e.g. force_dispatch) are cleared after sending
+	  // so they are only applied once by ops.
+	  const linesToSend = {};
+	  for (const [lineId, cfg] of Object.entries(lineOverrides)) {
+	    linesToSend[lineId] = { ...cfg };
+	    if (cfg.force_dispatch) {
+	      delete lineOverrides[lineId].force_dispatch;
+	    }
+	  }
+
+	  res.json({ lines: linesToSend });
+	});
 
 // Browser UI polls this for the latest state.
 app.get('/api/state', (req, res) => {
@@ -65,6 +74,20 @@ app.post('/api/lines/:lineId/maintenance', (req, res) => {
 
   res.json({ ok: true, lineId, maintenance: lineOverrides[lineId].maintenance });
 });
+
+	// Browser UI requests a one-shot force dispatch for a specific line here.
+	// This is analogous to pressing 'd' in ops, but scoped to a single line.
+	app.post('/api/lines/:lineId/force-dispatch', (req, res) => {
+	  const lineId = req.params.lineId;
+	  if (!lineId) {
+	    return res.status(400).json({ error: 'Missing lineId' });
+	  }
+
+	  const current = lineOverrides[lineId] || {};
+	  lineOverrides[lineId] = { ...current, force_dispatch: true };
+
+	  res.json({ ok: true, lineId });
+	});
 
 // Simple health check
 app.get('/health', (req, res) => {
