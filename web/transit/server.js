@@ -77,6 +77,8 @@ app.post('/api/lines/:lineId/maintenance', (req, res) => {
 
 	// Browser UI requests a one-shot force dispatch for a specific line here.
 	// This is analogous to pressing 'd' in ops, but scoped to a single line.
+	// If the line is currently in maintenance, FORCE also clears the maintenance
+	// latch so the line can resume normal operation.
 	app.post('/api/lines/:lineId/force-dispatch', (req, res) => {
 	  const lineId = req.params.lineId;
 	  if (!lineId) {
@@ -84,7 +86,11 @@ app.post('/api/lines/:lineId/maintenance', (req, res) => {
 	  }
 
 	  const current = lineOverrides[lineId] || {};
-	  lineOverrides[lineId] = { ...current, force_dispatch: true };
+	  const next = { ...current, force_dispatch: true };
+	  if (current.maintenance) {
+	    next.maintenance = false;
+	  }
+	  lineOverrides[lineId] = next;
 
 	  res.json({ ok: true, lineId });
 	});

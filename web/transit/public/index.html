@@ -143,14 +143,14 @@
         },
 
         stateText(state) {
-          switch (state) {
-            case 'BOARDING': return 'BRD';
-            case 'IN_TRANSIT': return 'TRT';
-            case 'ARRIVED': return 'AVD';
-            case 'DEPARTING': return 'DPT';
-            case 'SHUTDOWN': return 'MNT';
-            default: return '???';
-          }
+	      	  switch (state) {
+	      	    case 'BOARDING': return 'BOARDING';
+	      	    case 'IN_TRANSIT': return 'IN TRANSIT';
+	      	    case 'ARRIVED': return 'ARRIVED';
+	      	    case 'DEPARTING': return 'DEPARTING';
+	      	    case 'SHUTDOWN': return 'MAINTENANCE';
+	      	    default: return '???';
+	      	  }
         },
 
         stateClass(state) {

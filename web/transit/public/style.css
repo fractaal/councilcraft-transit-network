@@ -124,12 +124,12 @@ body {
 
 /* Station row - fixed-width columns like a terminal */
 .station-row {
-  display: grid;
-  grid-template-columns: 5ch 6ch 8ch 1fr 4ch 9ch 16ch;
-  gap: 1ch;
-  padding: 4px 8px;
-  align-items: center;
-}
+	  display: grid;
+	  grid-template-columns: 5ch 6ch 8ch 1fr 12ch 9ch 16ch;
+	  gap: 1ch;
+	  padding: 4px 8px;
+	  align-items: center;
+	}
 .station-row:nth-child(odd) { background: rgba(255,255,255,0.02); }
 
 /* State icon (ASCII) */

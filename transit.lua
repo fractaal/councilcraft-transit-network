@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.19"
+	local VERSION = "v0.10.20"
 	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
@@ -1360,9 +1360,9 @@ local function runStation(config)
         local shouldAnimate = false
         local secondaryAnim = ""
 
-        if state == "SHUTDOWN" then
-            statusIcon = "[XX]"
-            statusText = "MNT"
+	    if state == "SHUTDOWN" then
+	        statusIcon = "[XX]"
+	        statusText = "MAINTENANCE"
             statusColor = colors.red
             -- Flash for visibility
             if anim.shouldFlash(anim_frame, 2) then
@@ -2172,6 +2172,7 @@ local function runOps(config)
 		            if type(line_cfg) == "table" then
 		                local was_maintenance = external_line_overrides[line_id] and external_line_overrides[line_id].maintenance
 		                local now_maintenance = not not line_cfg.maintenance
+		                local is_force_dispatch = not not line_cfg.force_dispatch
 		
 		                new_overrides[line_id] = {
 		                    maintenance = now_maintenance,
@@ -2190,17 +2191,26 @@ local function runOps(config)
 		                    end
 		                end
 		
-		                -- Maintenance toggled OFF: only allow if all stations already in SHUTDOWN
+		                -- Maintenance toggled OFF: only allow if all stations already in SHUTDOWN,
+		                -- unless this change came from a FORCE dispatch override (explicit operator
+		                -- intent to resume service even if not all stations reached MNT).
 		                if not now_maintenance and was_maintenance then
-		                    if not checkLineInShutdown(line_id) then
-		                        -- Guard: don't clear maintenance until all stations are shutdown
-		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Cannot clear maintenance for line " .. line_id .. " - not all stations in SHUTDOWN")
-		                        new_overrides[line_id].maintenance = true  -- Keep maintenance ON
-		                    else
-		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
+		                    if is_force_dispatch then
+		                        print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line via FORCE: " .. line_id)
 		                        line_maintenance_requested[line_id] = nil
-		                        -- Per-line equivalent of pressing 'd' (force dispatch) for this line only
-		                        restartLineFromMaintenance(line_id)
+		                        -- Do not call restartLineFromMaintenance here; the explicit
+		                        -- force dispatch below will handle dispatching this line.
+		                    else
+		                        if not checkLineInShutdown(line_id) then
+		                            -- Guard: don't clear maintenance until all stations are shutdown
+		                            print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Cannot clear maintenance for line " .. line_id .. " - not all stations in SHUTDOWN")
+		                            new_overrides[line_id].maintenance = true  -- Keep maintenance ON
+		                        else
+		                            print("[" .. os.date("%H:%M:%S") .. "] [CTRL] Maintenance cleared for line: " .. line_id)
+		                            line_maintenance_requested[line_id] = nil
+		                            -- Per-line equivalent of pressing 'd' (force dispatch) for this line only
+		                            restartLineFromMaintenance(line_id)
+		                        end
 		                    end
 		                end
 		
@@ -2332,37 +2342,37 @@ local function runOps(config)
 
                 local state = station.state or "IN_TRANSIT"
 
-                if state == "SHUTDOWN" then
-                    statusIcon = "[XX]"
-                    statusText = "MNT"
-                    statusColor = colors.red
+	                if state == "SHUTDOWN" then
+	                    statusIcon = "[XX]"
+	                    statusText = "MAINTENANCE"
+	                    statusColor = colors.red
                     -- Flash for visibility
                     if anim.shouldFlash(anim_frame, 2) then
                         statusColor = colors.orange
                     end
-                elseif state == "DEPARTING" then
-                    statusIcon = anim.icons.departing
-                    statusText = "DPT"
+	                elseif state == "DEPARTING" then
+	                    statusIcon = anim.icons.departing
+	                    statusText = "DEPARTING"
                     statusColor = colors.orange
                     secondaryAnim = anim.getSpinner(anim_frame, 4)  -- Progress bar style
                     showSecondaryAnim = true
-                elseif state == "BOARDING" then
-                    statusIcon = anim.icons.boarding
-                    statusText = "BRD"
+	                elseif state == "BOARDING" then
+	                    statusIcon = anim.icons.boarding
+	                    statusText = "BOARDING"
                     statusColor = colors.lime
                     -- Gentle pulsing effect
                     if anim.shouldFlash(anim_frame, 3) then
                         statusColor = colors.lightGray
                     end
-                elseif state == "ARRIVED" then
-                    statusIcon = anim.icons.present
-                    statusText = "AVD"
+	                elseif state == "ARRIVED" then
+	                    statusIcon = anim.icons.present
+	                    statusText = "ARRIVED"
                     statusColor = colors.cyan
                     secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader (announcements playing)
                     showSecondaryAnim = true
-                else  -- IN_TRANSIT
-                    statusIcon = anim.icons.transit
-                    statusText = "TRT"
+	                else  -- IN_TRANSIT
+	                    statusIcon = anim.icons.transit
+	                    statusText = "IN TRANSIT"
                     statusColor = colors.yellow
                     secondaryAnim = anim.getSpinner(anim_frame, 2)  -- Dot loader
                     showSecondaryAnim = true
