@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.21"
+	local VERSION = "v0.10.22"
 	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
@@ -1464,9 +1464,7 @@ local function runStation(config)
 
             mon.setCursorPos(2, 14)
             mon.setTextColor(displayColor)
-            local to3 = { ["ON TIME"] = "ONT", ["EARLY"] = "EAR", ["DELAYED"] = "DLY" }
-            local display3 = to3[displayStatus] or displayStatus
-            mon.write(timingIcon .. " " .. display3)
+	            mon.write(timingIcon .. " " .. displayStatus)
 
             -- Show real-time trip progress
             if state == "IN_TRANSIT" and current_duration then
@@ -2460,20 +2458,20 @@ local function runOps(config)
                     local timingColor
                     local shouldFlashTiming = false
 
-                    if station.trip_status == "ON TIME" then
-                        timingIcon = anim.icons.on_time
-                        timingText = "ONT"
-                        timingColor = colors.lime
-                    elseif station.trip_status == "EARLY" then
-                        timingIcon = anim.icons.early
-                        timingText = "EAR"
-                        timingColor = colors.cyan
-                    elseif station.trip_status == "DELAYED" then
-                        timingIcon = anim.icons.delayed
-                        timingText = "DLY"
-                        timingColor = colors.red
-                        shouldFlashTiming = true
-                    end
+	                if station.trip_status == "ON TIME" then
+	                    timingIcon = anim.icons.on_time
+	                    timingText = "ON TIME"
+	                    timingColor = colors.lime
+	                elseif station.trip_status == "EARLY" then
+	                    timingIcon = anim.icons.early
+	                    timingText = "EARLY"
+	                    timingColor = colors.cyan
+	                elseif station.trip_status == "DELAYED" then
+	                    timingIcon = anim.icons.delayed
+	                    timingText = "DELAYED"
+	                    timingColor = colors.red
+	                    shouldFlashTiming = true
+	                end
 
                     -- Flash DELAYED for urgency
                     local displayTimingColor = timingColor
