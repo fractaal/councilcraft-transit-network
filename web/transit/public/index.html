@@ -110,14 +110,12 @@
       progress: ['[    ]', '[=   ]', '[==  ]', '[=== ]', '[====]', '[ ===]', '[  ==]', '[   =]']
     };
 
-    let spinnerFrame = 0;
-    setInterval(() => { spinnerFrame++; }, 150);
-
     function ControlPlane() {
       return {
         ops: null,
         overrides: {},
         currentTime: '',
+        frame: 0,  // Reactive animation frame
 
         get lines() {
           if (!this.ops || !this.ops.lines) return [];
@@ -163,11 +161,12 @@
         },
 
         getSpinner(state) {
+          const f = this.frame;  // Access reactive frame to trigger re-render
           if (state === 'DEPARTING') {
-            return SPINNERS.progress[spinnerFrame % SPINNERS.progress.length];
+            return SPINNERS.progress[f % SPINNERS.progress.length];
           }
           if (state === 'IN_TRANSIT' || state === 'ARRIVED') {
-            return SPINNERS.dots[spinnerFrame % SPINNERS.dots.length];
+            return SPINNERS.dots[f % SPINNERS.dots.length];
           }
           return '';
         },
@@ -248,6 +247,8 @@
           this.updateTime();
           setInterval(() => this.fetchState(), 2000);
           setInterval(() => this.updateTime(), 1000);
+          // Animation loop at ~6.67 FPS (150ms per frame, matching in-game 0.15s display interval)
+          setInterval(() => { this.frame++; }, 150);
         }
       };
     }

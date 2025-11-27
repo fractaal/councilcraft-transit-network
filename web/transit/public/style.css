@@ -1,4 +1,5 @@
 /* CouncilCraft Transit Control Plane - ComputerCraft palette */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
 
 :root {
   /* CC:T official 16-color palette */
@@ -20,7 +21,7 @@
   --cc-black: #111111;
 
   --cc-bg: var(--cc-black);
-  --cc-font: "Consolas", "Monaco", "Lucida Console", monospace;
+  --cc-font: "JetBrains Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -30,8 +31,8 @@ body {
   background: var(--cc-bg);
   color: var(--cc-white);
   font-family: var(--cc-font);
-  font-size: 14px;
-  line-height: 1.3;
+  font-size: 28px;
+  line-height: 1.4;
 }
 
 #app {
@@ -121,26 +122,22 @@ body {
   color: var(--cc-red);
 }
 
-/* Station row - matches ops center station display */
+/* Station row - fixed-width columns like a terminal */
 .station-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 5ch 6ch 8ch 1fr 4ch 9ch 16ch;
+  gap: 1ch;
+  padding: 4px 8px;
   align-items: center;
-  gap: 8px;
-  padding: 2px 4px;
-  font-size: 13px;
 }
 .station-row:nth-child(odd) { background: rgba(255,255,255,0.02); }
 
 /* State icon (ASCII) */
 .state-icon {
   font-weight: bold;
-  min-width: 36px;
 }
 
 /* Heartbeat indicator */
-.heartbeat {
-  min-width: 48px;
-}
 .hb-healthy { color: var(--cc-lime); }
 .hb-stale { color: var(--cc-yellow); }
 .hb-offline { color: var(--cc-red); }
@@ -148,32 +145,30 @@ body {
 /* Version */
 .station-version {
   color: var(--cc-gray);
-  min-width: 64px;
 }
 
 /* Station name */
 .station-name {
   color: var(--cc-white);
-  flex: 1;
-  min-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Status text (BRD, TRT, etc.) */
 .status-text {
-  min-width: 36px;
   font-weight: bold;
 }
 
 /* Spinner animation */
 .spinner {
   color: var(--cc-gray);
-  min-width: 48px;
 }
 
 /* Trip timing */
 .trip-timing {
-  min-width: 100px;
   text-align: right;
+  white-space: nowrap;
 }
 
 /* State colors */
@@ -228,8 +223,12 @@ body {
 .flash-dispatch { animation: flash-lime-white 0.5s infinite; }
 
 /* Responsive */
-@media (max-width: 700px) {
-  .station-row { flex-wrap: wrap; font-size: 12px; }
+@media (max-width: 1200px) {
+  body { font-size: 20px; }
+  .station-row {
+    grid-template-columns: 5ch 6ch 1fr 4ch 9ch;
+  }
   .station-version { display: none; }
+  .trip-timing { display: none; }
 }
 
