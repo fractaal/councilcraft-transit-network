@@ -5,7 +5,7 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.23"
+	local VERSION = "v0.10.24"
 	local DESCRIPTOR="per-line-maintenance+force-dispatch"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
@@ -1655,18 +1655,19 @@ end
 
 local function runOps(config)
     -- State
-    local stations = {}
-    local modem = nil
-    local last_discovery = 0
-    local shutdown_requested = false  -- Track maintenance mode request
-    local update_available = false
-    local remote_version = nil
-    local last_update_check = 0
-	local line_states = {}  -- Per-line dispatch state
-	local external_line_overrides = {}  -- Line-level overrides from external control plane (e.g., maintenance flags)
-	local control_plane_disabled = false
-	local last_control_plane_push = 0
-	local control_plane_pending = false
+	    local stations = {}
+	    local modem = nil
+	    local last_discovery = 0
+	    local shutdown_requested = false  -- Track maintenance mode request
+	    local update_available = false
+	    local remote_version = nil
+	    local last_update_check = 0
+		local line_states = {}  -- Per-line dispatch state
+		local external_line_overrides = {}  -- Line-level overrides from external control plane (e.g., maintenance flags)
+		local control_plane_disabled = false
+		local last_control_plane_push = 0
+		local control_plane_pending = false
+		local control_plane_pending_since = 0  -- When the current control-plane request was started (seconds since epoch)
 
     -- Setup
     term.clear()
@@ -2248,6 +2249,7 @@ local function runOps(config)
 	        end
 
 	        control_plane_pending = true
+	        control_plane_pending_since = now
 	        local ok_req, err = pcall(http.request, {
 	            url = config.control_plane_url,
 	            method = "POST",
@@ -2260,6 +2262,7 @@ local function runOps(config)
 	                print("[CTRL] http.request error: " .. tostring(err))
 	            end
 	            control_plane_pending = false
+	            control_plane_pending_since = 0
 	        end
 	    end
 
@@ -2745,17 +2748,30 @@ local function runOps(config)
 	            last_modem_check = now
 	        end
 
-		        -- Periodic control plane telemetry push (ops -> external controller)
-		        if config.control_plane_url and config.control_plane_url ~= "" then
-		            if last_control_plane_push == 0 then
-		                last_control_plane_push = now
-		            end
-		            local interval = config.control_plane_push_interval or 1
-		            if interval > 0 and (now - last_control_plane_push) >= interval then
-		                scheduleControlPlanePush(now)
-		                last_control_plane_push = now
-		            end
-		        end
+	        -- Control plane watchdog: if a request has been pending too long, reset the flag
+	        if control_plane_pending and control_plane_pending_since > 0 then
+	            local pending_age = now - control_plane_pending_since
+	            -- Expect a response or failure within a few seconds (http.request timeout is 5s).
+	            if pending_age > 10 then
+	                if MODEM_DEBUG then
+	                    print(string.format("[CTRL] Watchdog: control plane pending for %.1fs, resetting", pending_age))
+	                end
+	                control_plane_pending = false
+	                control_plane_pending_since = 0
+	            end
+	        end
+
+	        -- Periodic control plane telemetry push (ops -> external controller)
+	        if config.control_plane_url and config.control_plane_url ~= "" then
+	            if last_control_plane_push == 0 then
+	                last_control_plane_push = now
+	            end
+	            local interval = config.control_plane_push_interval or 1
+	            if interval > 0 and (now - last_control_plane_push) >= interval then
+	                scheduleControlPlanePush(now)
+	                last_control_plane_push = now
+	            end
+	        end
 
 	        -- Periodic update check (GitHub)
         if now - last_update_check >= config.update_check_interval then
@@ -2841,6 +2857,7 @@ local function runOps(config)
 	                local body = handle.readAll()
 	                handle.close()
 	                control_plane_pending = false
+	                control_plane_pending_since = 0
 	                if body and body ~= "" then
 	                    local ok, decoded = pcall(textutils.unserializeJSON, body)
 	                    if ok and type(decoded) == "table" then
@@ -2863,6 +2880,7 @@ local function runOps(config)
 	                    print("[CTRL] Control plane HTTP failure: " .. tostring(err))
 	                end
 	                control_plane_pending = false
+	                control_plane_pending_since = 0
 	            end
 	            if handle then
 	                handle.close()
