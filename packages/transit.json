@@ -1,6 +1,6 @@
 {
-		"name": "transit",
-		"version": "v0.10.24-per-line-maintenance+force-dispatch",
+			"name": "transit",
+			"version": "v0.10.25-new-station-callouts",
   "description": "CouncilCraft Transit network controller/station software.",
   "files": [
     {

@@ -5,8 +5,8 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.24"
-	local DESCRIPTOR="per-line-maintenance+force-dispatch"
+	local VERSION = "v0.10.25"
+	local DESCRIPTOR="new-station-callouts"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -726,8 +726,14 @@ audio.station_map = {
     ["Cloud District"] = "CLOUD_DISTRICT",
     ["Dragonsreach"] = "DRAGONSREACH",
     ["Plains District"] = "PLAINS_DISTRICT",
-    ["City Hall"] = "CITY_HALL",
-    -- ["City Hall (to"] = "CITY_HALL_ABRIDGED",
+	    ["City Hall"] = "CITY_HALL",
+
+	    ["Adventurer's Guild"] = "ADVENTURERS_GUILD",
+	    ["Byron's Hollow"] = "BYRONS_HOLLOW",
+	    ["Eli's Place"] = "ELIS_PLACE",
+	    ["Rorikstead"] = "RORIKSTEAD",
+	    ["CBD"] = "CENTRAL_BUSINESS_DISTRICT",
+	    -- ["City Hall (to"] = "CITY_HALL_ABRIDGED",
 
     -- Add more stations here as you expand:
     -- ["Station Name"] = "SEQUENCE_KEY",
