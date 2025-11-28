@@ -1,6 +1,6 @@
 {
 			"name": "transit",
-			"version": "v0.10.25-new-station-callouts",
+			"version": "v0.10.26-new-station-sequences",
   "description": "CouncilCraft Transit network controller/station software.",
   "files": [
     {

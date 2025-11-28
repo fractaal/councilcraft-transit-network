@@ -5,8 +5,8 @@
 -- ============================================================================
 -- ============================================================================
 
-	local VERSION = "v0.10.25"
-	local DESCRIPTOR="new-station-callouts"
+	local VERSION = "v0.10.26"
+	local DESCRIPTOR="new-station-sequences"
 
 -- Global debug flag for modem/network logging (overridden by config at runtime)
 MODEM_DEBUG = false
@@ -686,33 +686,41 @@ audio.config = {
 -- ============================================================================
 -- Define all available sound files here
 
-audio.library = {
-    -- Chimes
-    SG_MRT_BELL = "SG_MRT_BELL.dfpwm",  -- Generic Singapore MRT arrival bell
-
-    -- Station-specific announcements (V2 versions)
-    ARRIVAL_GENERIC = "ARRIVAL_GENERIC.dfpwm",
-    ARRIVAL_CLOUD_DISTRICT_V2 = "ARRIVAL_CLOUD_DISTRICT_V2.dfpwm",
-    ARRIVAL_DRAGONSREACH_V2 = "ARRIVAL_DRAGONSREACH_V2.dfpwm",
-    ARRIVAL_PLAINS_DISTRICT_V2 = "ARRIVAL_PLAINS_DISTRICT_V2.dfpwm",
-    ARRIVAL_CITY_HALL = "ARRIVAL_CITY_HALL.dfpwm",
-
-    -- Hints and instructions (V2 version)
-    ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
-    ALIGHT_HINT_V3 = "ALIGHT_HINT_V3.dfpwm",
-
-    LOOPS_HERE_BEFORE_NAME = "LOOPS_HERE_BEFORE_NAME.dfpwm",
-    LOOPS_HERE_AFTER_NAME = "LOOPS_HERE_AFTER_NAME.dfpwm",
-
-    OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
-
-    -- Departure sounds
-    DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm",
-
-    -- System announcements
-    MAINTENANCE = "MAINTENANCE.dfpwm",
-    DELAYED = "DELAYED.dfpwm"
-}
+	audio.library = {
+	    -- Chimes
+	    SG_MRT_BELL = "SG_MRT_BELL.dfpwm",  -- Generic Singapore MRT arrival bell
+	
+	    -- Station-specific announcements (V2 versions)
+	    ARRIVAL_GENERIC = "ARRIVAL_GENERIC.dfpwm",
+	    ARRIVAL_CLOUD_DISTRICT_V2 = "ARRIVAL_CLOUD_DISTRICT_V2.dfpwm",
+	    ARRIVAL_DRAGONSREACH_V2 = "ARRIVAL_DRAGONSREACH_V2.dfpwm",
+	    ARRIVAL_PLAINS_DISTRICT_V2 = "ARRIVAL_PLAINS_DISTRICT_V2.dfpwm",
+	    ARRIVAL_CITY_HALL = "ARRIVAL_CITY_HALL.dfpwm",
+	
+	    -- New station-specific callouts
+	    BYRONS_HOLLOW = "BYRONS_HOLLOW.dfpwm",
+	    ELIS_PLACE = "ELIS_PLACE.dfpwm",
+	    RORIKSTEAD = "RORIKSTEAD.dfpwm",
+	    CENTRAL_BUSINESS_DISTRICT = "CENTRAL_BUSINESS_DISTRICT.dfpwm",
+	    -- NOTE: Add sounds/ADVENTURERS_GUILD.dfpwm when available
+	    ADVENTURERS_GUILD = "ADVENTURERS_GUILD.dfpwm",
+	
+	    -- Hints and instructions (V2 version)
+	    ALIGHT_HINT_V2 = "ALIGHT_HINT_V2.dfpwm",
+	    ALIGHT_HINT_V3 = "ALIGHT_HINT_V3.dfpwm",
+	
+	    LOOPS_HERE_BEFORE_NAME = "LOOPS_HERE_BEFORE_NAME.dfpwm",
+	    LOOPS_HERE_AFTER_NAME = "LOOPS_HERE_AFTER_NAME.dfpwm",
+	
+	    OTHER_TERMINATES_HERE = "OTHER_TERMINATES_HERE.dfpwm",
+	
+	    -- Departure sounds
+	    DEPARTURE_CART_DEPARTING = "DEPARTURE_CART_DEPARTING.dfpwm",
+	
+	    -- System announcements
+	    MAINTENANCE = "MAINTENANCE.dfpwm",
+	    DELAYED = "DELAYED.dfpwm"
+	}
 
 -- ============================================================================
 -- STATION ID MAPPING
@@ -745,49 +753,75 @@ audio.station_map = {
 -- Define multi-sound sequences for each station
 -- Sequences play in order with automatic spacing between sounds
 
-audio.sequences = {
-    -- Station-specific arrival sequences
-
-    -- Line 1 sequence, in order
-
-    PLAINS_DISTRICT = {
-        "SG_MRT_BELL",
-        "ARRIVAL_PLAINS_DISTRICT_V2",
-    },
-
-    CLOUD_DISTRICT = {
-        "SG_MRT_BELL",
-        "ARRIVAL_CLOUD_DISTRICT_V2",
-    },
-
-    CITY_HALL = {
-        "SG_MRT_BELL",
-        "ARRIVAL_CITY_HALL",
-    },
-
-    DRAGONSREACH = {
-        "SG_MRT_BELL",
-        "ARRIVAL_DRAGONSREACH_V2",
-    },
-
-    -- Fallback sequence (used if station_id doesn't match)
-    _FALLBACK = {
-        "SG_MRT_BELL",
-        "ARRIVAL_GENERIC"
-    },
-
-    -- Departure sequence (same for all stations)
-    _DEPARTURE = {
-        "DEPARTURE_CART_DEPARTING"
-    },
-
-    -- Maintenance announcement (shutdown mode)
-    _MAINTENANCE = {
-        "SG_MRT_BELL",
-        "MAINTENANCE",
-        "SG_MRT_BELL",
-    }
-}
+	audio.sequences = {
+	    -- Station-specific arrival sequences
+	
+	    -- Line 1 sequence, in order
+	
+	    PLAINS_DISTRICT = {
+	        "SG_MRT_BELL",
+	        "ARRIVAL_PLAINS_DISTRICT_V2",
+	    },
+	
+	    CLOUD_DISTRICT = {
+	        "SG_MRT_BELL",
+	        "ARRIVAL_CLOUD_DISTRICT_V2",
+	    },
+	
+	    CITY_HALL = {
+	        "SG_MRT_BELL",
+	        "ARRIVAL_CITY_HALL",
+	    },
+	
+	    DRAGONSREACH = {
+	        "SG_MRT_BELL",
+	        "ARRIVAL_DRAGONSREACH_V2",
+	    },
+	
+	    -- New per-station sequences (bell + station name callout)
+	    ADVENTURERS_GUILD = {
+	        "SG_MRT_BELL",
+	        "ADVENTURERS_GUILD",
+	    },
+	
+	    BYRONS_HOLLOW = {
+	        "SG_MRT_BELL",
+	        "BYRONS_HOLLOW",
+	    },
+	
+	    ELIS_PLACE = {
+	        "SG_MRT_BELL",
+	        "ELIS_PLACE",
+	    },
+	
+	    RORIKSTEAD = {
+	        "SG_MRT_BELL",
+	        "RORIKSTEAD",
+	    },
+	
+	    CENTRAL_BUSINESS_DISTRICT = {
+	        "SG_MRT_BELL",
+	        "CENTRAL_BUSINESS_DISTRICT",
+	    },
+	
+	    -- Fallback sequence (used if station_id doesn't match)
+	    _FALLBACK = {
+	        "SG_MRT_BELL",
+	        "ARRIVAL_GENERIC"
+	    },
+	
+	    -- Departure sequence (same for all stations)
+	    _DEPARTURE = {
+	        "DEPARTURE_CART_DEPARTING"
+	    },
+	
+	    -- Maintenance announcement (shutdown mode)
+	    _MAINTENANCE = {
+	        "SG_MRT_BELL",
+	        "MAINTENANCE",
+	        "SG_MRT_BELL",
+	    }
+	}
 
 -- ============================================================================
 -- DFPWM AUDIO SYSTEM
