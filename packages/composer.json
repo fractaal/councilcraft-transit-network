@@ -1,6 +1,6 @@
 {
   "name": "composer",
-  "version": "0.2.5-pa-ws-agent-backend",
+  "version": "0.2.6-pa-agent-stream-fix",
   "description": "CouncilCraft Composer - Lightweight package manager for distributing ComputerCraft software from GitHub.",
   "files": [
     {

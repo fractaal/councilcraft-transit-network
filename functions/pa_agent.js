@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { PassThrough } from "node:stream";
 import { YtDlp } from "ytdlp-nodejs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -88,10 +89,22 @@ async function handleStreamRequest(ws, message) {
     const handle = ytDlp.stream(url, {
       format: { filter: "audioonly", quality: "best", type: "best" },
     });
-    readable = resolveReadable(handle);
-    if (!readable) {
-      throw new Error("yt-dlp returned an unsupported stream type");
-    }
+
+    // ytdlp-nodejs v2 stream() returns an object with { pipe, pipeAsync, promise }
+    // backed by an internal PassThrough, not a raw Node.js Readable.
+    // To work with standard stream events, we pipe into our own PassThrough.
+    const passThrough = new PassThrough();
+
+    // Pipe the yt-dlp output into our PassThrough stream
+    handle.pipe(passThrough);
+
+    // Avoid unhandled rejections from the underlying promise and surface
+    // failures via the PassThrough's 'error' event (handled below).
+    handle.promise.catch((error) => {
+      passThrough.destroy(error);
+    });
+
+    readable = passThrough;
   } catch (error) {
     ws.send(
       JSON.stringify({
